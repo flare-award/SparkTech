@@ -52,7 +52,17 @@ jobs:
       # принимать осознанно. Сборка без adb — рабочее состояние, путь задаётся
       # в настройках приложения.
       - name: Сборка
-        run: python -m PyInstaller SparkTech.spec --noconfirm --clean
+        shell: bash
+        run: |
+          # хвост вывода публикуется аннотациями — так причина видна без логов
+          python -m PyInstaller SparkTech.spec --noconfirm --clean 2>&1 | tee build.log || true
+          status=$(grep -c "^ERROR" build.log || true)
+          if [ ! -f dist/SparkTech.exe ]; then
+            tail -n 25 build.log | sed -e 's/%/%25/g' -e 's/\r//g' |
+              while IFS= read -r line; do echo "::error title=pyinstaller::${line}"; done
+            exit 1
+          fi
+          tail -n 3 build.log
       - name: Проверка, что exe создан
         shell: pwsh
         run: |
