@@ -25,7 +25,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
       - name: Тесты
-        run: python -m pytest -q
+        shell: bash
+        run: |
+          python -m pytest -q || {
+            # Публикуем хвост вывода в аннотациях проверки: причина падения
+            # видна прямо в интерфейсе GitHub, без скачивания логов.
+            python -m pytest -q --tb=line 2>&1 | tail -n 12 | sed -e 's/%/%25/g' -e 's/\r//g' |
+              while IFS= read -r line; do echo "::error title=pytest::${line}"; done
+            exit 1
+          }
 
   windows-exe:
     name: Сборка SparkTech.exe
