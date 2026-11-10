@@ -58,16 +58,20 @@ def test_path_with_spaces_works(tmp_path):
     assert client.resolve() == str(adb)
 
 
-def test_folder_alone_does_not_count_as_executable(tmp_path):
+def test_folder_alone_does_not_count_as_executable(tmp_path, monkeypatch):
     """Папка не должна приниматься за adb: именно это давало ложное сообщение."""
     folder = tmp_path / "platform-tools"
     folder.mkdir()
+    # на раннере CI (ubuntu) есть системный adb — изолируем автопоиск,
+    # иначе тест проверял бы не нашу логику, а предустановленный adb
+    monkeypatch.setattr(AdbClient, "candidate_paths", staticmethod(lambda: []))
     client = AdbClient(str(folder))
     with pytest.raises(AdbNotFound):
         client.resolve(force=True)
 
 
-def test_nonexistent_path_reports_not_found(tmp_path):
+def test_nonexistent_path_reports_not_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(AdbClient, "candidate_paths", staticmethod(lambda: []))
     client = AdbClient(str(tmp_path / "nope" / "adb.exe"))
     with pytest.raises(AdbNotFound):
         client.resolve(force=True)
