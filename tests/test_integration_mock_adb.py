@@ -21,7 +21,6 @@ import pytest
 from sparktech.core.adb import AdbClient
 from sparktech.core.classify import Settings
 from sparktech.core.deleter import Deleter
-from sparktech.core.models import RemoteFile
 from sparktech.core.optimizer import Optimizer
 from sparktech.core.scanner import ScanOptions, Scanner
 

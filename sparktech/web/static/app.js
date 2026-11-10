@@ -658,6 +658,17 @@ function renderCoverage() {
   });
   const warnings = $("#coverage-warnings");
   warnings.innerHTML = "";
+  // Честная статистика: сколько файлов мы видели, но не предложили к удалению.
+  const skipped = scan.skipped || {};
+  const parts = [];
+  if (skipped.protected) parts.push(`${plural(skipped.protected, "файл", "файла", "файлов")} в закрытых каталогах приложений`);
+  if (skipped.small) parts.push(`${plural(skipped.small, "файл", "файла", "файлов")} меньше минимального размера`);
+  if (skipped.other) parts.push(`${plural(skipped.other, "файл", "файла", "файлов")} не подошли по категориям`);
+  if (parts.length) {
+    warnings.appendChild(h("div", { class: "callout" },
+      "Не предложено к удалению: " + parts.join(", ") + ". Это не значит, что их нужно удалять — " +
+      "SparkTech не относит их к выбранным категориям или не имеет к ним доступа."));
+  }
   (scan.warnings || []).forEach((w) => warnings.appendChild(h("div", { class: "warning-box" }, w)));
 }
 

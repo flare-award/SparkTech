@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import os
 import posixpath
 import secrets
 import socket
 import sys
 import threading
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,7 +32,7 @@ from ..core.deleter import Deleter
 from ..core.jobs import Job, JobManager
 from ..core.models import human_bytes
 from ..core.optimizer import USER_ACTIONS, Optimizer
-from ..core.process import CommandCancelled, CommandError, CommandTimeout
+from ..core.process import CommandError, CommandTimeout
 from ..core.scanner import ScanOptions, Scanner
 from ..core.store import Store
 

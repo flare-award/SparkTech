@@ -17,15 +17,13 @@ SparkTech намеренно не делает: очистку RAM, «ускор
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 from .adb import AdbClient
 from .models import ActionOutcome
 from .process import CommandCancelled, CommandError, CommandTimeout
 from .remote_path import quote_remote_path
-
-SETTINGS_PREFIX = ""
 
 # Действия с настройками, исходные значения которых мы сохраняем в
 # локальном хранилище приложения (не на телефоне), чтобы можно было отменить.

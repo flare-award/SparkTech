@@ -103,3 +103,49 @@ def test_to_dict_is_json_friendly(fake_adb, sample_files):
     data = json.loads(payload)
     assert data["count"] == len(result.items)
     assert data["summary"]
+
+
+def test_skip_statistics_are_reported(fake_adb):
+    """Пользователь видит, сколько файлов не попало в результат и почему."""
+    fake_adb.existing_roots = {
+        "/storage/emulated/0/Download",
+        "/storage/emulated/0/Android/data",  # добавим явно как доп. корень
+    }
+    fake_adb.files = {
+        "/storage/emulated/0/Download/big.mp4": RemoteFile(
+            "/storage/emulated/0/Download/big.mp4", 200 * 1024 * 1024, 1
+        ),
+        "/storage/emulated/0/Download/tiny.txt": RemoteFile(
+            "/storage/emulated/0/Download/tiny.txt", 10, 1
+        ),
+        "/storage/emulated/0/Android/data/com.x/cache.bin": RemoteFile(
+            "/storage/emulated/0/Android/data/com.x/cache.bin", 50 * 1024 * 1024, 1
+        ),
+    }
+    result = make_scanner(fake_adb).scan(
+        "TESTSERIAL",
+        options=ScanOptions(
+            # мелкие файлы (10 Б) отсекаются порогом 1 МБ — они попадут в «small»
+            settings=Settings(min_size=1024 * 1024, find_duplicates=False),
+            extra_roots=["/storage/emulated/0/Android/data"],
+        ),
+    )
+    assert result.skipped["small"] == 1  # tiny.txt
+    assert result.skipped["protected"] == 1  # Android/data
+    assert [i.path for i in result.items] == ["/storage/emulated/0/Download/big.mp4"]
+    assert result.to_dict()["skipped"] == {"protected": 1, "small": 1, "other": 0}
+
+
+def test_min_size_skips_are_counted(fake_adb):
+    fake_adb.files = {
+        "/storage/emulated/0/Download/big.apk": RemoteFile(
+            "/storage/emulated/0/Download/big.apk", 80 * 1024 * 1024, 1
+        ),
+        "/storage/emulated/0/Download/small.apk": RemoteFile(
+            "/storage/emulated/0/Download/small.apk", 1024, 1
+        ),
+    }
+    settings = Settings(min_size=10 * 1024 * 1024, find_duplicates=False)
+    result = make_scanner(fake_adb).scan("TESTSERIAL", options=ScanOptions(settings=settings))
+    assert result.skipped["small"] == 1
+    assert [i.path for i in result.items] == ["/storage/emulated/0/Download/big.apk"]

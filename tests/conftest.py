@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-from dataclasses import dataclass, field
-
 import pytest
 
 from sparktech.core.adb import Device
@@ -133,9 +130,12 @@ class FakeAdb:
         if "-name .thumbnails" in command:
             return self._res("")
         if "if [ -e" in command:
-            if "find" in command:
-                return self._res("")
-            lines = [p for p in sorted(self.existing_roots) if f"'{p}'" in command]
+            # как настоящая оболочка: каждое условие печатает только свой путь
+            lines = [
+                path
+                for path in sorted(self.existing_roots)
+                if f"[ -e '{path}' ]" in command
+            ]
             return self._res("\n".join(lines))
         if "sha256sum" in command or "head -c 65536" in command:
             for path, digest in self.hashes.items():

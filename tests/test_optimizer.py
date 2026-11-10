@@ -50,8 +50,6 @@ def test_animation_setting_applies_and_is_verified():
 
 
 def test_setting_reports_failure_when_not_confirmed():
-    adb = FakeAdb()
-
     class Stubborn(FakeAdb):
         def _shell(self, command):
             if command.startswith("settings put"):
@@ -89,8 +87,6 @@ def test_undo_without_saved_value_is_user_action():
 
 
 def test_unavailable_action_is_skipped():
-    adb = FakeAdb()
-
     class NoMedia(FakeAdb):
         def _shell(self, command):
             if "content call" in command:

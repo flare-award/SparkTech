@@ -86,6 +86,12 @@ class ScanItem:
     def category_label(self) -> str:
         return " + ".join(CATEGORY_LABELS.get(c, c) for c in self.categories) or CATEGORY_LABELS["other"]
 
+    def is_deletable(self) -> bool:
+        """Может ли SparkTech технически удалить этот путь (без учёта выбора)."""
+        from .remote_path import is_safe_deletable
+
+        return is_safe_deletable(self.path)[0]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "path": self.path,
@@ -103,7 +109,7 @@ class ScanItem:
             "warnings": self.extra_warnings,
             "duplicate_of": self.duplicate_of,
             "hash_kind": self.hash_kind,
-            "deletable": not self.extra_warnings or True,  # фактическая проверка — в delete
+            "deletable": self.is_deletable(),
         }
 
 

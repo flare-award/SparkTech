@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import shlex
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,9 +24,9 @@ from typing import Callable, Iterable
 from . import classify
 from .adb import AdbClient
 from .classify import Settings
-from .models import RemoteFile, ScanArea, ScanItem, ScanResult, make_scan_id
+from .models import RemoteFile, ScanArea, ScanResult, make_scan_id
 from .process import CommandCancelled, CommandError, CommandTimeout
-from .remote_path import normalize_remote, quote_remote_path, strip_sdcard_prefix
+from .remote_path import normalize_remote, quote_remote_path
 
 # Пользовательские каталоги, которые имеет смысл обходить.
 # Все они доступны обычному приложению adbd без root (с оговорками Android 11+).
@@ -197,9 +196,9 @@ class Scanner:
                 if file.path in all_seen:
                     continue
                 all_seen[file.path] = file
-                # OBB-файлы передаём в анализ: они показываются (но не удаляются).
-                if not classify.is_in_protected_dir(file.path) or "/obb/" in file.path.lower():
-                    files_by_path[file.path] = file
+                # Решение «показывать / не показывать» принимает только
+                # classify: он же фиксирует причину пропуска для статистики.
+                files_by_path[file.path] = file
             odd_names += getattr(area, "_odd", 0) if hasattr(area, "_odd") else 0
 
         result.total_files_seen = total_seen
@@ -236,13 +235,11 @@ class Scanner:
         files_so_far: int,
         include_obb: bool = False,
     ) -> tuple[ScanArea, list[RemoteFile]]:
-        quoted = quote_remote_path(root)
         # Разделитель \x1f (unit separator) не встречается в путях Android.
         # -print0 был бы чище, но `adb shell` буферизует поток; построчный
         # вывод с разделителем работает стабильно и на старых adb.
         command = find_command(root, include_obb=include_obb)
         files: list[RemoteFile] = []
-        odd = 0
         last_emit = 0.0
 
         def on_line(line: str) -> None:

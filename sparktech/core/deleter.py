@@ -19,7 +19,7 @@ import threading
 from typing import Iterable
 
 from .adb import AdbClient
-from .models import DeleteResult, RemoteFile
+from .models import DeleteResult
 from .process import CommandCancelled, CommandError, CommandTimeout
 from .remote_path import is_safe_deletable, quote_remote_path
 
