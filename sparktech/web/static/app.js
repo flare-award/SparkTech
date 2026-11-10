@@ -23,6 +23,12 @@ const state = {
   actions: [],
   selectedActions: new Set(),
   actionsMeta: {},
+  preview: null,        // открытый в просмотре файл
+  apps: [],
+  appsLoadedFor: null,
+  appsShown: 80,
+  appsFilters: { query: "", category: "", kind: "", sort: "size", desc: true },
+  appsMeta: { count: 0, total_size: 0, removable_size: 0, notes: [] },
 };
 
 /* ----------------------------------------------------------------- утилиты */
@@ -68,6 +74,76 @@ function fmtDate(epoch) {
   } catch { return "дата неизвестна"; }
 }
 
+/* Дата с временем: нужна там, где важны часы (установка и запуск приложений). */
+function fmtDateTime(ms) {
+  if (!ms) return "—";
+  try {
+    return new Date(ms).toLocaleString("ru-RU", {
+      year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+  } catch { return "—"; }
+}
+
+/* «3 года назад» — чтобы давность файла читалась сразу, без счёта в уме. */
+function ago(ms) {
+  if (!ms) return "";
+  const diff = Date.now() - Number(ms);
+  if (!Number.isFinite(diff) || diff < 0) return "";
+  const day = 86400000;
+  const days = Math.floor(diff / day);
+  if (days < 1) return "сегодня";
+  if (days === 1) return "вчера";
+  if (days < 30) return `${days} дн. назад`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} мес. назад`;
+  const years = Math.floor(days / 365);
+  return `${years} ${years === 1 ? "год" : years < 5 ? "года" : "лет"} назад`;
+}
+
+/* Иконки Lucide: набор лежит локально в icons.js, интернет не нужен. */
+function iconSvg(name) {
+  const body = (window.SparkIcons || {})[name];
+  if (!body) return "";
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ` +
+    `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+function iconEl(name, cls = "") {
+  const el = document.createElement("span");
+  el.className = `ico ${cls}`.trim();
+  el.innerHTML = iconSvg(name);
+  return el;
+}
+
+/* Проставить иконки всем элементам с data-icon (в том числе новым). */
+function hydrateIcons(root = document) {
+  root.querySelectorAll("[data-icon]").forEach((el) => {
+    if (el.dataset.iconDone === "1") return;
+    el.innerHTML = iconSvg(el.dataset.icon);
+    el.dataset.iconDone = "1";
+  });
+}
+
+const EXT_ICON = {
+  image: "image", video: "file-video", audio: "music", apk: "package",
+  archive: "file-archive", document: "file-text", other: "file-text",
+};
+
+function fileKind(item) {
+  const mime = item.mime || "";
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  const ext = (item.extension || "").toLowerCase();
+  if (".jpg.jpeg.png.webp.gif.bmp.heic.heif.avif".includes(ext)) return "image";
+  if (".mp4.mkv.mov.3gp.webm.m4v.avi.ts.flv".includes(ext)) return "video";
+  if (".mp3.m4a.ogg.wav.flac.aac.opus".includes(ext)) return "audio";
+  if (ext === ".apk" || ext === ".apks" || ext === ".xapk") return "apk";
+  if (".zip.rar.7z.tar.gz.bz2".includes(ext)) return "archive";
+  if (".pdf.txt.doc.docx.xls.xlsx.ppt.pptx".includes(ext)) return "document";
+  return "other";
+}
+
 function toast(message, kind = "info", ttl = 5200) {
   const stack = $("#toast-stack");
   const el = h("div", { class: `toast ${kind}` }, message);
@@ -108,7 +184,7 @@ async function api(path, { method = "GET", body = null, timeout = 90000 } = {}) 
 }
 
 /* ------------------------------------------------------------------- навигация */
-const VIEWS = ["connect", "clean", "optimize", "log", "settings"];
+const VIEWS = ["connect", "clean", "apps", "optimize", "log", "settings"];
 
 function switchView(name) {
   if (!VIEWS.includes(name)) return;
@@ -120,6 +196,7 @@ function switchView(name) {
     if (b) b.classList.toggle("active", v === name);
   });
   if (name === "optimize" && state.serial) loadActions();
+  if (name === "apps" && state.serial && !state.apps.length) loadApps();
   if (name === "log") loadLog();
   if (name === "settings") loadSettings();
   if (name === "clean" && !state.scan) restoreSavedSettingsToUi();
@@ -152,7 +229,7 @@ function setConnection(status, label, detail) {
   $("#hero-text").textContent = detail || "";
 
   const ready = status === "ready" || status === "ready_multiple";
-  $$(".nav-item[data-view='clean'], .nav-item[data-view='optimize']").forEach((b) => { b.disabled = !ready; });
+  $$(".nav-item[data-view='clean'], .nav-item[data-view='optimize'], .nav-item[data-view='apps']").forEach((b) => { b.disabled = !ready; });
   $("#begin-clean").disabled = !ready;
   $("#begin-optimize").disabled = !ready;
 }
@@ -265,7 +342,7 @@ async function refreshDevices() {
     setConnection(payload.status, payload.status_label, payload.adb && payload.adb.error ? payload.adb.error : undefined);
     renderHeroActions(payload);
     if (payload.status === "ready") {
-      $$(".nav-item[data-view='clean'], .nav-item[data-view='optimize']").forEach((b) => { b.disabled = false; });
+      $$(".nav-item[data-view='clean'], .nav-item[data-view='optimize'], .nav-item[data-view='apps']").forEach((b) => { b.disabled = false; });
     }
   } catch (err) {
     setConnection("error", "Ошибка проверки подключения", err.message);
@@ -305,6 +382,7 @@ function scanSettingsPayload() {
     find_duplicates: $("#set-dups").checked,
     full_hash: $("#set-fullhash").checked,
     include_obb: $("#set-obb").checked,
+    show_previews: $("#set-preview").checked,
   };
 }
 
@@ -325,6 +403,7 @@ function restoreSavedSettingsToUi() {
   if (typeof s.find_duplicates === "boolean") $("#set-dups").checked = s.find_duplicates;
   if (typeof s.full_hash === "boolean") $("#set-fullhash").checked = s.full_hash;
   if (typeof s.include_obb === "boolean") $("#set-obb").checked = s.include_obb;
+  if (typeof s.show_previews === "boolean") $("#set-preview").checked = s.show_previews;
 }
 
 $("#clean-settings-btn").addEventListener("click", () => {
@@ -442,6 +521,7 @@ async function loadScanResult(scanId, job) {
   state.hidden.clear();
   state.shown = state.pageSize;
   renderResults();
+  hydrateIcons();
   const cancelled = (job && job.status === "cancelled") || state.scan.cancelled;
   if (cancelled) {
     setScanState(
@@ -498,6 +578,7 @@ function filteredItems() {
 function renderResults() {
   $("#results-block").classList.remove("hidden");
   renderStats();
+  renderFreeCard();
   categoryOptions();
   renderTable();
   renderCoverage();
@@ -530,6 +611,63 @@ function renderStats() {
       h("div", { class: "stat-value" }, value),
       h("div", { class: "stat-sub" }, sub)));
   });
+  if (state.scan) renderFreeCard();
+}
+
+/* «Сколько места освободится»: считается от свободного места на телефоне
+   (данные df) плюс подтверждённый размер выбранных файлов. Если df не отдал
+   размеры, честно пишем «нет данных», а не показываем красивое число. */
+function renderFreeCard() {
+  const scan = state.scan;
+  const card = $("#free-card");
+  if (!scan || !card) return;
+  const selected = state.items.filter((i) => state.selected.has(i.path));
+  const pending = selected.reduce((a, i) => a + i.size, 0);
+  const freeNow = scan.free_now ?? scan.storage_free ?? null;
+  const total = scan.storage_total ?? null;
+
+  $("#free-pending").textContent = fmtBytes(pending);
+  $("#free-now").textContent = freeNow === null ? "нет данных" : fmtBytes(freeNow);
+  $("#free-tag").textContent = pending
+    ? `${plural(selected.length, "файл", "файла", "файлов")} · ${fmtBytes(pending)}`
+    : "ничего не выбрано";
+
+  if (freeNow === null) {
+    $("#free-after").textContent = "нет данных";
+    $("#free-used").textContent = "—";
+    $("#free-used-bar").style.width = "0%";
+    $("#free-pending-bar").style.width = "0%";
+    $("#free-note").textContent =
+      "Телефон не сообщил объём свободного места (бывает на части прошивок). " +
+      "Размер выбранных файлов всё равно точный — он взят из сканирования.";
+    return;
+  }
+
+  const after = Math.min(total ?? Number.MAX_SAFE_INTEGER, freeNow + pending);
+  $("#free-after").textContent = fmtBytes(after);
+  $("#free-used").textContent = total ? fmtBytes(Math.max(0, total - freeNow)) : "—";
+
+  if (total) {
+    const usedPct = Math.max(0, Math.min(100, ((total - freeNow) / total) * 100));
+    const pendingPct = Math.max(0, Math.min(100 - usedPct, (pending / total) * 100));
+    $("#free-used-bar").style.width = `${usedPct}%`;
+    $("#free-pending-bar").style.width = `${pendingPct}%`;
+  } else {
+    $("#free-used-bar").style.width = "0%";
+    $("#free-pending-bar").style.width = "0%";
+  }
+
+  const notes = [];
+  notes.push(
+    pending
+      ? `Если удалить выбранное, свободно станет примерно ${fmtBytes(after)}.`
+      : `Выберите файлы — SparkTech покажет, сколько места освободится.`
+  );
+  if (pending && scan.count) {
+    notes.push(`Все найденные файлы (${fmtBytes(scan.total_size)}) дали бы ${fmtBytes(freeNow + scan.total_size)} свободного места, но удалять всё подряд не нужно.`);
+  }
+  notes.push("Оценка не учитывает служебные файлы самой Android: точный итог виден после удаления.");
+  $("#free-note").textContent = notes.join(" ");
 }
 
 function categoryChip(cat) {
@@ -565,13 +703,28 @@ function renderTable() {
           e.target.closest(".row").classList.toggle("selected", e.target.checked);
         },
       }),
-      h("div", { class: "row-main" },
-        h("div", { class: "row-name", title: item.name }, item.name),
-        h("div", { class: "row-path", title: item.path }, item.path)),
+      h("div", { class: "file-cell" },
+        previewThumb(item),
+        h("div", { class: "row-main file-text" },
+          h("div", { class: "row-name", title: item.name }, item.name),
+          h("div", { class: "row-path", title: item.path }, item.path))),
+      h("div", { class: "row-date" },
+        h("span", {}, fmtDate(item.mtime)),
+        h("span", { class: "ago" }, ago(item.mtime * 1000))),
       h("div", { class: "row-cat" }, ...item.categories.map(categoryChip)),
       h("div", { class: "num" }, fmtBytes(item.size)),
       h("div", { class: `risk ${item.risk}` }, h("span", { class: "risk-dot" }), h("span", {}, item.risk_label.replace(" осторожность", ""))),
       h("div", { class: "row-actions-cell" },
+        previewable(item)
+          ? h("button", {
+              class: "tiny-btn", title: "Открыть и проверить файл перед удалением",
+              onclick: () => openPreview(item),
+            }, iconEl("eye"))
+          : null,
+        h("button", {
+          class: "tiny-btn", title: "Сохранить файл на компьютер",
+          onclick: () => downloadItems([item.path]),
+        }, iconEl("download")),
         h("button", { class: "tiny-btn why", onclick: (e) => toggleDetails(e, item) }, "Почему?"),
         h("button", {
           class: "tiny-btn",
@@ -589,6 +742,140 @@ function renderTable() {
   if (state.shown > 0 && list.length > state.shown) {
     $("#load-more").disabled = false;
   }
+}
+
+/* ------------------------------------------------------ превью и просмотр */
+
+let previewObserver = null;
+
+function previewable(item) {
+  const kind = fileKind(item);
+  return kind === "image" || kind === "video" || kind === "audio";
+}
+
+function previewUrl(item) {
+  return `/api/preview/${state.scanId}?path=${encodeURIComponent(item.path)}`;
+}
+
+function fileUrl(item) {
+  return `/api/file/${state.scanId}?path=${encodeURIComponent(item.path)}`;
+}
+
+/* Миниатюра грузится только когда попала в поле зрения: иначе на списке из
+   сотен видео телефон и adb получат сотни запросов сразу. */
+function previewThumb(item) {
+  const kind = fileKind(item);
+  const box = h("div", {
+    class: "row-preview",
+    title: previewable(item) ? "Открыть предпросмотр" : "Предпросмотр недоступен для этого типа",
+    onclick: previewable(item) ? () => openPreview(item) : null,
+  });
+  if (previewable(item)) {
+    const img = h("img", { alt: "", loading: "lazy" });
+    img.addEventListener("load", () => box.classList.add("loaded"));
+    img.addEventListener("error", () => {
+      img.remove();
+      box.appendChild(iconEl(kind === "audio" ? "music" : EXT_ICON[kind] || "file-text"));
+    });
+    box.dataset.src = previewUrl(item);
+    box.appendChild(img);
+    if (kind === "video") box.appendChild(h("span", { class: "play-badge" }, iconEl("play")));
+    queuePreviewLoad(box, img);
+  } else {
+    box.appendChild(iconEl(EXT_ICON[fileKind(item)] || "file-text"));
+  }
+  return box;
+}
+
+function queuePreviewLoad(box, img) {
+  if (!("IntersectionObserver" in window)) {
+    img.src = box.dataset.src;
+    return;
+  }
+  if (!previewObserver) {
+    previewObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const el = entry.target;
+        const image = el.querySelector("img");
+        if (image && el.dataset.src && !image.getAttribute("src")) image.src = el.dataset.src;
+        previewObserver.unobserve(el);
+      });
+    }, { rootMargin: "200px" });
+  }
+  previewObserver.observe(box);
+}
+
+function previewsAllowed() {
+  const box = $("#set-preview");
+  return !box || box.checked;
+}
+
+async function openPreview(item) {
+  state.preview = item;
+  const body = $("#preview-body");
+  const kind = fileKind(item);
+  $("#preview-title").textContent = item.name;
+  $("#preview-meta").textContent =
+    `${fmtBytes(item.size)} · изменён ${fmtDate(item.mtime)}${item.mtime ? " (" + ago(item.mtime * 1000) + ")" : ""}`;
+  $("#preview-hint").textContent = "Файл читается с телефона по кабелю — в интернет ничего не уходит.";
+  $("#preview-download").onclick = () => downloadItems([item.path]);
+  $("#preview-delete").onclick = () => { $("#modal-preview").classList.add("hidden"); askDelete([item.path]); };
+  $("#modal-preview").classList.remove("hidden");
+  body.innerHTML = "";
+
+  if (!previewsAllowed()) {
+    body.appendChild(h("div", { class: "preview-note" },
+      "Показ превью отключён в настройках сканирования: файлы с телефона не читаются. " +
+      "Включите «Показывать превью файлов» или сохраните файл на компьютер."));
+    body.appendChild(h("div", { class: "row-actions" },
+      h("button", { class: "btn primary", onclick: () => downloadItems([item.path]) }, "Сохранить на ПК")));
+    return;
+  }
+
+  if (kind === "image") {
+    body.appendChild(h("div", { class: "empty muted" }, "Загрузка изображения с телефона…"));
+    const img = h("img", { alt: item.name });
+    img.addEventListener("load", () => { body.innerHTML = ""; body.appendChild(img); });
+    img.addEventListener("error", () => {
+      body.innerHTML = "";
+      body.appendChild(h("div", { class: "preview-note" },
+        "Не удалось показать изображение. Возможные причины: формат не поддерживается браузером " +
+        "(например, HEIC), файл повреждён или доступ к нему закрыт. Название и размер при этом верные — " +
+        "проверить содержимое можно, сохранив файл на компьютер."));
+      body.appendChild(h("div", { class: "row-actions" },
+        h("button", { class: "btn primary", onclick: () => downloadItems([item.path]) }, "Сохранить на ПК"),
+        h("button", { class: "btn ghost", onclick: () => window.open(fileUrl(item), "_blank", "noopener") }, "Открыть как файл")));
+    });
+    img.src = previewUrl(item);
+    body.appendChild(img);
+    return;
+  }
+
+  if (kind === "video" || kind === "audio") {
+    const media = h(kind === "video" ? "video" : "audio", {
+      controls: true, preload: "metadata", src: previewUrl(item),
+    });
+    if (kind === "video") media.setAttribute("playsinline", "");
+    media.addEventListener("error", () => {
+      body.innerHTML = "";
+      body.appendChild(h("div", { class: "preview-note" },
+        "Браузер не смог показать этот файл. Чаще всего дело в кодеке (например, HEVC/H.265 или " +
+        "некоторые MKV), а не в самом файле: SparkTech отдаёт ровно те байты, что лежат на телефоне. " +
+        "Сохраните файл на компьютер и откройте любым плеером."));
+      body.appendChild(h("div", { class: "row-actions" },
+        h("button", { class: "btn primary", onclick: () => downloadItems([item.path]) }, "Сохранить на ПК")));
+    });
+    body.appendChild(media);
+    if (kind === "video") {
+      body.appendChild(h("p", { class: "muted xsmall" },
+        "Первый кадр может появиться не сразу: видео читается с телефона по кабелю."));
+    }
+    return;
+  }
+
+  body.appendChild(h("div", { class: "preview-note" },
+    "Для этого типа файла предпросмотр браузером невозможен. Можно сохранить файл на компьютер."));
 }
 
 function toggleDetails(event, item) {
@@ -761,6 +1048,304 @@ function renderDeleteReport(job) {
   body.appendChild(h("div", { class: "report-note" }, "Восстановление удалённых файлов не поддерживается и не обещается."));
   box.appendChild(h("div", { class: "report" }, head, body));
 }
+
+/* ------------------------------------------------------- сохранение на ПК */
+
+async function downloadItems(paths) {
+  if (!state.serial) { toast("Устройство не подключено", "err"); return; }
+  if (!paths.length) { toast("Ничего не выбрано", "warn"); return; }
+  const items = paths.map((p) => state.items.find((i) => i.path === p)).filter(Boolean);
+  const total = items.reduce((a, i) => a + i.size, 0);
+  toast(`Сохранение ${plural(paths.length, "файла", "файлов", "файлов")} (${fmtBytes(total)}) в папку «Загрузки»…`, "warn", 7000);
+  try {
+    const { job_id, folder } = await api("/api/download", {
+      method: "POST",
+      body: { serial: state.serial, scan_id: state.scanId, paths },
+      timeout: 60000,
+    });
+    const wrap = $("#scan-progress-wrap");
+    wrap.classList.remove("hidden");
+    $("#scan-progress-bar").className = "progress-bar indeterminate";
+    $("#scan-cancel").classList.remove("hidden");
+    state.scanJob = job_id;
+    const job = await pollJob(job_id, (j, ev) => {
+      if (ev.stage === "download") {
+        $("#scan-progress-text").textContent = ev.message || "Сохранение…";
+        $("#scan-progress-stats").textContent = ev.name ? `${ev.name} · ${ev.human || ""}` : "";
+      }
+    });
+    finishScanUi();
+    state.scanJob = null;
+    renderDownloadReport(job, folder);
+  } catch (err) {
+    toast(err.message, "err", 9000);
+  }
+}
+
+function renderDownloadReport(job, folder) {
+  const box = $("#delete-report");
+  box.innerHTML = "";
+  box.classList.remove("hidden");
+  const result = job.result || {};
+  const saved = result.saved || [];
+  const failed = result.failed || [];
+  const body = h("div", { class: "report-body" });
+  if (job.status === "error") body.appendChild(h("div", { class: "warning-box" }, job.error || "Ошибка сохранения"));
+  if (saved.length) {
+    body.appendChild(h("div", { class: "muted xsmall" }, `Сохранено файлов: ${saved.length}`));
+    saved.slice(0, 200).forEach((r) => body.appendChild(h("div", { class: "report-row" },
+      h("div", { style: "min-width:0" },
+        h("div", {}, r.path.rsplit("/", 1)[-1]),
+        h("div", { class: "msg", title: r.local_path }, r.local_path)),
+      h("span", { class: "badge success" }, fmtBytes(r.size)))));
+    if (saved.length > 200) body.appendChild(h("div", { class: "muted xsmall" }, `…и ещё ${saved.length - 200}`));
+  }
+  if (failed.length) {
+    body.appendChild(h("div", { class: "muted xsmall" }, "Не сохранено:"));
+    failed.forEach((r) => body.appendChild(h("div", { class: "report-row" },
+      h("span", { class: "msg" }, `${r.path} — ${r.message}`),
+      h("span", { class: "badge failed" }, "ошибка"))));
+  }
+  body.appendChild(h("div", { class: "report-note" },
+    `Папка на компьютере: ${result.folder || folder}. Размер каждой копии сверен с размером на телефоне. ` +
+    "Файлы на телефоне остались на месте — удалить их можно отдельно."));
+  box.appendChild(h("div", { class: "report" },
+    h("div", { class: "report-head" },
+      h("h3", {}, "Отчёт о сохранении"),
+      h("span", { class: "tag" }, `сохранено ${saved.length} · ошибок ${failed.length}`)),
+    body));
+}
+
+$("#download-selected").addEventListener("click", () => {
+  if (!state.selected.size) { toast("Сначала отметьте файлы", "warn"); return; }
+  downloadItems([...state.selected]);
+});
+
+/* ------------------------------------------------------------- приложения */
+
+const APP_CATEGORY_ICON = {
+  messenger: "message-circle", social: "globe", video: "file-video", photo: "camera",
+  audio: "music", travel: "map", browser: "globe", mail: "mail", office: "file-spreadsheet",
+  system: "shield-check", app: "box",
+};
+
+async function loadApps(force = false) {
+  if (!state.serial) { toast("Сначала подключите телефон", "warn"); return; }
+  $("#apps-progress-wrap").classList.remove("hidden");
+  $("#apps-progress-bar").className = "progress-bar indeterminate";
+  $("#apps-progress-text").textContent = "Чтение списка пакетов и ресурсов APK…";
+  $("#apps-load").disabled = true;
+  $("#apps-state-title").textContent = "Загрузка списка…";
+  $("#apps-state-text").textContent =
+    "SparkTech читает список пакетов, затем названия и иконки из APK. Не отключайте кабель.";
+  try {
+    const query = `serial=${encodeURIComponent(state.serial)}${force ? "&refresh=1" : ""}`;
+    const data = await api(`/api/apps?${query}`, { timeout: 300000 });
+    state.apps = data.apps || [];
+    state.appsMeta = {
+      count: data.count || 0,
+      total_size: data.total_size || 0,
+      removable_size: data.removable_size || 0,
+      notes: data.notes || [],
+    };
+    state.appsLoadedFor = state.serial;
+    state.appsShown = 80;
+    $("#apps-state-title").textContent = "Список загружен";
+    $("#apps-state-text").textContent =
+      `Приложений: ${data.count.toLocaleString("ru-RU")}. Данные и кэш приложений недоступны без root — ` +
+      "SparkTech показывает их объём, но не очищает.";
+    renderApps();
+  } catch (err) {
+    $("#apps-state-title").textContent = "Не удалось загрузить список";
+    $("#apps-state-text").textContent = err.message;
+    toast(err.message, "err", 9000);
+    if (/Устройство|не найдено|недоступно/i.test(err.message)) refreshDevices();
+  } finally {
+    $("#apps-progress-wrap").classList.add("hidden");
+    $("#apps-load").disabled = false;
+  }
+}
+
+function renderApps() {
+  $("#apps-block").classList.remove("hidden");
+  renderAppsStats();
+  renderAppsCategoryFilter();
+  renderAppsTable();
+  const notes = $("#apps-notes");
+  notes.innerHTML = "";
+  (state.appsMeta.notes || []).forEach((n) => notes.appendChild(h("div", { class: "warning-box" }, n)));
+}
+
+function renderAppsStats() {
+  const meta = state.appsMeta;
+  const userApps = state.apps.filter((a) => !a.is_system);
+  const row = $("#apps-stats");
+  row.innerHTML = "";
+  [
+    ["Приложений", String(meta.count), `из них установлено вами: ${userApps.length}`],
+    ["Занимают всего", fmtBytes(meta.total_size), "APK + данные + кэш по данным Android"],
+    ["Из них не системные", fmtBytes(meta.removable_size), "их можно удалить на телефоне"],
+    ["Самое крупное", userApps.length ? (userApps.slice().sort((a, b) => b.total_size - a.total_size)[0].label || "—") : "—",
+      userApps.length ? fmtBytes(userApps.slice().sort((a, b) => b.total_size - a.total_size)[0].total_size) : ""],
+  ].forEach(([label, value, sub]) => {
+    row.appendChild(h("div", { class: "stat" },
+      h("div", { class: "stat-label" }, label),
+      h("div", { class: "stat-value" }, value),
+      h("div", { class: "stat-sub" }, sub)));
+  });
+}
+
+function renderAppsCategoryFilter() {
+  const select = $("#apps-filter-category");
+  const current = select.value;
+  const cats = new Map();
+  state.apps.forEach((a) => cats.set(a.category_key, a.category_label));
+  select.innerHTML = "";
+  select.appendChild(h("option", { value: "" }, "Все категории"));
+  [...cats.entries()].sort((a, b) => a[1].localeCompare(b[1], "ru"))
+    .forEach(([key, label]) => select.appendChild(h("option", { value: key }, label)));
+  select.value = cats.has(current) ? current : "";
+}
+
+function filteredApps() {
+  const f = state.appsFilters;
+  let list = state.apps.slice();
+  if (f.query) {
+    const q = f.query.toLowerCase();
+    list = list.filter((a) => (a.label || "").toLowerCase().includes(q) || a.package.toLowerCase().includes(q));
+  }
+  if (f.category) list = list.filter((a) => a.category_key === f.category);
+  if (f.kind === "user") list = list.filter((a) => !a.is_system);
+  if (f.kind === "system") list = list.filter((a) => a.is_system);
+  const keys = {
+    size: (a) => a.total_size,
+    installed: (a) => a.installed_at || 0,
+    updated: (a) => a.updated_at || 0,
+    used: (a) => a.last_used_at || 0,
+    name: (a) => (a.label || a.package).toLowerCase(),
+  };
+  const kf = keys[f.sort] || keys.size;
+  list.sort((a, b) => {
+    const ka = kf(a), kb = kf(b);
+    if (ka < kb) return f.desc ? 1 : -1;
+    if (ka > kb) return f.desc ? -1 : 1;
+    return 0;
+  });
+  return list;
+}
+
+function appIcon(a) {
+  const box = h("div", { class: "app-icon", title: a.package });
+  if (a.icon_available) {
+    const img = h("img", {
+      alt: "", loading: "lazy",
+      src: `/api/app-icon/${encodeURIComponent(a.package)}?serial=${encodeURIComponent(state.serial)}`,
+    });
+    img.addEventListener("error", () => {
+      img.remove();
+      box.appendChild(iconEl(APP_CATEGORY_ICON[a.category_key] || "box"));
+    });
+    box.appendChild(img);
+  } else {
+    box.appendChild(iconEl(APP_CATEGORY_ICON[a.category_key] || "box"));
+  }
+  return box;
+}
+
+function renderAppsTable() {
+  const body = $("#apps-body");
+  body.innerHTML = "";
+  const list = filteredApps();
+  $("#apps-visible-count").textContent =
+    `Показано ${Math.min(state.appsShown, list.length)} из ${list.length} (всего ${state.apps.length})`;
+  $("#apps-load-more").classList.toggle("hidden", list.length <= state.appsShown);
+  if (!list.length) {
+    body.appendChild(h("div", { class: "empty muted" }, "Под текущие фильтры ничего не подходит."));
+    return;
+  }
+  list.slice(0, state.appsShown).forEach((a) => {
+    const row = h("div", { class: "app-row" },
+      appIcon(a),
+      h("div", { style: "min-width:0" },
+        h("div", { class: "app-name", title: a.label }, a.label),
+        h("div", { class: "app-pkg", title: a.package }, a.package)),
+      h("div", { class: "app-cell" },
+        h("span", {}, fmtDate((a.installed_at || 0) / 1000)),
+        h("span", { class: "ago" }, ago(a.installed_at))),
+      h("div", { class: "app-cell" },
+        h("span", {}, fmtDate((a.updated_at || 0) / 1000)),
+        h("span", { class: "ago" }, ago(a.updated_at))),
+      h("div", { class: "app-cell" },
+        h("span", {}, a.last_used_at ? fmtDateTime(a.last_used_at) : "нет данных"),
+        h("span", { class: "ago" }, a.last_used_at ? ago(a.last_used_at) : "")),
+      h("div", { class: "app-cell app-size" },
+        h("strong", {}, fmtBytes(a.total_size)),
+        h("span", { class: "breakdown" },
+          `APK ${fmtBytes(a.apk_size)} · данные ${fmtBytes(a.data_size)}` +
+          (a.cache_size ? ` · кэш ${fmtBytes(a.cache_size)}` : ""))));
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("a,button")) return;
+      toggleAppDetails(row, a);
+    });
+    body.appendChild(row);
+  });
+}
+
+function toggleAppDetails(row, a) {
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains("app-details")) { next.remove(); return; }
+  const details = h("div", { class: "app-details" },
+    h("div", { class: "reason" }, h("b", {}, "Пакет: "), a.package,
+      a.version_name ? ` · версия ${a.version_name}` : ""),
+    h("div", { class: "reason" }, h("b", {}, "Категория: "), a.category_label,
+      a.is_system ? " · системное приложение" : " · установлено вами"),
+    h("div", { class: "reason" }, h("b", {}, "Установлено: "), fmtDateTime(a.installed_at),
+      " · ", h("b", {}, "Обновлено: "), fmtDateTime(a.updated_at)),
+    h("div", { class: "reason" }, h("b", {}, "Последний запуск: "),
+      a.last_used_at ? fmtDateTime(a.last_used_at) : "Android не сообщает это значение"),
+    h("div", { class: "reason" }, h("b", {}, "Размер: "),
+      `приложение ${fmtBytes(a.apk_size)}, данные ${fmtBytes(a.data_size)}, кэш ${fmtBytes(a.cache_size)}`),
+    ...(a.notes || []).map((n) => h("div", { class: "warn-line" }, n)),
+    a.critical
+      ? h("div", { class: "warn-line" },
+          "Системное или критичное приложение. Удаление может нарушить работу телефона — SparkTech не предлагает это делать.")
+      : h("div", { class: "reason" },
+          "Удаление приложения выполняется на телефоне: Настройки → Приложения → выбрать приложение → Удалить. " +
+          "Кэш приложения очищается там же на экране приложения."),
+    h("div", { class: "reason" },
+      "SparkTech не удаляет приложения и не очищает их данные: без root это невозможно безопасно и проверяемо."));
+  row.after(details);
+}
+
+$("#apps-load").addEventListener("click", () => loadApps(false));
+$("#apps-refresh").addEventListener("click", () => loadApps(true));
+$("#apps-filter-query").addEventListener("input", (e) => {
+  state.appsFilters.query = e.target.value;
+  state.appsShown = 80;
+  renderAppsTable();
+});
+$("#apps-filter-category").addEventListener("change", (e) => {
+  state.appsFilters.category = e.target.value;
+  renderAppsTable();
+});
+$("#apps-filter-kind").addEventListener("change", (e) => {
+  state.appsFilters.kind = e.target.value;
+  renderAppsTable();
+});
+$("#apps-sort").addEventListener("change", (e) => {
+  state.appsFilters.sort = e.target.value;
+  renderAppsTable();
+});
+$("#apps-sort-dir").addEventListener("click", (e) => {
+  state.appsFilters.desc = !state.appsFilters.desc;
+  e.currentTarget.dataset.desc = state.appsFilters.desc ? "1" : "0";
+  e.currentTarget.innerHTML = iconSvg(state.appsFilters.desc ? "arrow-down" : "arrow-up");
+  renderAppsTable();
+});
+$("#apps-load-more").addEventListener("click", () => {
+  state.appsShown += 80;
+  renderAppsTable();
+});
 
 /* ------------------------------------------------------------------ оптимизация */
 async function loadActions() {
@@ -1013,6 +1598,7 @@ document.addEventListener("keydown", (e) => {
 
 /* ------------------------------------------------------------------- запуск */
 async function boot() {
+  hydrateIcons();
   try {
     const health = await api("/api/health", { timeout: 5000 });
     $("#version-label").textContent = `${health.app} ${health.version}`;

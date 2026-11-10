@@ -60,6 +60,9 @@ class Settings:
     duplicate_min_size: int = MIN_DUPLICATE_SIZE
     full_hash: bool = False
     max_items: int = 5000
+    # Показывать превью (читает файлы с телефона). Отключается, если не
+    # нужно нагружать устройство или кабель медленный.
+    show_previews: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -73,6 +76,7 @@ class Settings:
             "duplicate_min_size": self.duplicate_min_size,
             "full_hash": self.full_hash,
             "max_items": self.max_items,
+            "show_previews": self.show_previews,
         }
 
     @classmethod
@@ -107,7 +111,48 @@ class Settings:
             duplicate_min_size=as_int("duplicate_min_size", d.duplicate_min_size, 0, 100 * 1024 ** 3),
             full_hash=as_bool("full_hash", d.full_hash),
             max_items=max(100, min(20000, as_int("max_items", d.max_items, 100, 20000))),
+            show_previews=as_bool("show_previews", d.show_previews),
         )
+
+
+MEDIA_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif", ".avif", ".dng"}
+MEDIA_VIDEO_EXT = {".mp4", ".mkv", ".mov", ".3gp", ".webm", ".m4v", ".avi", ".ts", ".flv"}
+
+# Закрытые для рекомендаций каталоги, внутри которых всё же лежат обычные
+# пользовательские медиа (DCIM, Pictures, Movies, Screenshots).
+USER_MEDIA_MARKERS = (
+    "/dcim/", "/dcim100", "/dcim200", "/camera/", "/pictures/", "/movies/",
+    "/screenshots/", "/screen recordings/", "/screenrecords/", "/videos/",
+)
+
+
+def _in_downloads(path: str) -> bool:
+    """Путь относится к «Загрузкам»/мессенджерам (download_kind возвращает bool)."""
+    return bool(download_kind(path))
+
+
+def _is_user_media(path: str) -> bool:
+    """Файл — обычное фото/видео в пользовательском каталоге камеры/скриншотов."""
+    low = _low(path)
+    if "/.thumbnails/" in low or "/.trashed/" in low:
+        return False
+    ext = ("." + path.rsplit(".", 1)[-1].lower()) if "." in path.rsplit("/", 1)[-1] else ""
+    if ext not in MEDIA_IMAGE_EXT and ext not in MEDIA_VIDEO_EXT:
+        return False
+    return any(marker in low for marker in USER_MEDIA_MARKERS)
+
+
+def media_kind(path: str) -> str | None:
+    """Вид медиафайла: ``image``, ``video`` или None."""
+    name = path.rsplit("/", 1)[-1]
+    if "." not in name:
+        return None
+    ext = "." + name.rsplit(".", 1)[-1].lower()
+    if ext in MEDIA_IMAGE_EXT:
+        return "image"
+    if ext in MEDIA_VIDEO_EXT:
+        return "video"
+    return None
 
 
 def _low(path: str) -> str:
@@ -161,7 +206,10 @@ def classify_file(
     risk = "low"
     low = _low(file.path)
 
-    if is_in_protected_dir(file.path):
+    # Смена/скриншоты в DCIM — это пользовательские медиа, а не закрытые
+    # данные. Без этого исключения фото и видео из DCIM вообще не попадали
+    # в список, и посмотреть их перед удалением было нельзя.
+    if is_in_protected_dir(file.path) and not _is_user_media(file.path):
         # Закрытые системой каталоги: не предлагаем удаление вовсе.
         if skip_reason is not None:
             skip_reason["reason"] = "protected"
@@ -205,6 +253,23 @@ def classify_file(
             f"({_fmt(settings.big_file_threshold)}). Сам по себе размер не делает файл мусором."
         )
         risk = max(risk, "medium", key=RISK_ORDER.get)
+
+    media = media_kind(file.path)
+    if media is not None:
+        # Фото и видео из загрузок, мессенджеров и камеры: их чаще всего и
+        # хотят проверить перед удалением. Категория отдельная от «Крупный».
+        # Показываем медиа из «Загрузок», мессенджеров и камеры. Мелкий
+        # ролик в Documents — это документ пользователя, его не трогаем.
+        if _in_downloads(file.path) or _is_user_media(file.path):
+            categories.append("photo" if media == "image" else "video")
+            reasons.append(
+                "Фото" if media == "image" else "Видео"
+            )
+            reasons[-1] += (
+                " в пользовательской памяти. SparkTech показывает превью — "
+                "посмотрите файл перед удалением."
+            )
+            risk = max(risk, "medium", key=RISK_ORDER.get)
 
     if settings.include_downloads and download_kind(file.path):
         categories.append("download")

@@ -187,3 +187,35 @@ def test_obb_files_shown_but_marked_protected():
     files = [rf("/storage/emulated/0/Android/obb/com.game/main.obb", 3 * 1024 * 1024),
              rf("/storage/emulated/0/Download/main.obb", 3 * 1024 * 1024)]
     assert len(duplicate_candidates(files, SETTINGS)) == 1
+
+
+# ------------------------------------------------ фото и видео в результатах
+
+def test_photo_in_dcim_is_offered_and_previewable():
+    """Фото из DCIM раньше вообще не попадало в список — его нельзя было проверить."""
+    item = classify_file(rf("/storage/emulated/0/DCIM/IMG_20240115.png", 5 * 1024 * 1024), SETTINGS)
+    assert item is not None
+    assert "photo" in item.categories
+    assert item.risk == "high"  # пользовательские медиа: осторожность высокая
+
+
+def test_video_in_downloads_gets_video_category():
+    item = classify_file(rf("/storage/emulated/0/Download/clip.mp4", 3 * 1024 * 1024), SETTINGS)
+    assert item is not None
+    assert "video" in item.categories
+
+
+def test_thumbnail_cache_is_not_user_media():
+    """Эскизы камеры — мусор, но не «пользовательские медиа»: категория не photo."""
+    item = classify_file(rf("/storage/emulated/0/DCIM/.thumbnails/1.png", 4096), SETTINGS)
+    if item is not None:
+        assert "photo" not in item.categories
+
+
+def test_media_kind_detection():
+    from sparktech.core.classify import media_kind
+
+    assert media_kind("/a/b.jpg") == "image"
+    assert media_kind("/a/b.MP4") == "video"
+    assert media_kind("/a/b.zip") is None
+    assert media_kind("/a/noext") is None

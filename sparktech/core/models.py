@@ -9,6 +9,8 @@ from typing import Any
 
 CATEGORY_LABELS = {
     "big": "Крупный файл",
+    "photo": "Фото",
+    "video": "Видео",
     "download": "Загрузки",
     "archive": "Архив",
     "apk": "Установочный пакет",
@@ -77,7 +79,7 @@ class ScanItem:
     @property
     def category_key(self) -> str:
         """Основная категория для группировки в интерфейсе."""
-        for key in ("duplicate", "apk", "archive", "temp", "download", "big"):
+        for key in ("duplicate", "apk", "archive", "temp", "download", "video", "photo", "big"):
             if key in self.categories:
                 return key
         return self.categories[0] if self.categories else "other"
@@ -175,6 +177,21 @@ class ScanResult:
             entry["count"] += 1
             entry["size"] += item.size
         return sorted(acc.values(), key=lambda e: e["size"], reverse=True)
+
+    def free_after_delete(self, removed: int) -> dict[str, Any]:
+        """Сколько станет свободно, если удалить ``removed`` байт.
+
+        Честная арифметика по данным ``df`` с устройства: свободно сейчас +
+        подтверждённый объём выбранных файлов. Если размер свободного места
+        неизвестен, возвращается None — лучше «нет данных», чем выдумка.
+        """
+        current = self.storage_free
+        if current is None:
+            return {"known": False, "current": None, "after": None, "total": self.storage_total}
+        after = current + max(0, int(removed))
+        if self.storage_total:
+            after = min(after, self.storage_total)
+        return {"known": True, "current": current, "after": after, "total": self.storage_total}
 
     def to_dict(self) -> dict[str, Any]:
         return {

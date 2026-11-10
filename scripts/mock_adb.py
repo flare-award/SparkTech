@@ -29,6 +29,12 @@ SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".mock_
 MAP_PREFIX = "/storage/emulated/0"
 
 
+# Каталоги установки приложений тоже живут «в телефоне»: в макете они
+# отображаются внутрь $SPARKTECH_MOCK_ROOT, чтобы метаданные приложений
+# (размер APK, иконка) читались так же, как на настоящем устройстве.
+EXTRA_MOUNTS = ("/data/app", "/system/priv-app", "/system/app", "/product/app")
+
+
 def map_path(path: str) -> str:
     if path == MAP_PREFIX:
         return ROOT
@@ -36,13 +42,22 @@ def map_path(path: str) -> str:
         return ROOT + path[len(MAP_PREFIX):]
     if path.startswith("/sdcard"):
         return map_path(MAP_PREFIX + path[len("/sdcard"):])
+    for mount in EXTRA_MOUNTS:
+        if path == mount or path.startswith(mount + "/"):
+            return ROOT + path
     return path
 
 
 def rewrite(command: str) -> str:
-    """Подменить пути телефона на каталог макета (вне кавычек не нужно —
-    подстановка безопасна, т.к. это тестовая среда)."""
-    return command.replace(MAP_PREFIX, ROOT).replace("'/sdcard", "'" + ROOT)
+    """Подменить пути телефона на каталог макета.
+
+    Это тестовая среда, поэтому простая замена строк допустима: настоящий
+    SparkTech всегда передаёт пути отдельными аргументами с экранированием.
+    """
+    text = command.replace(MAP_PREFIX, ROOT).replace("'/sdcard", "'" + ROOT)
+    for mount in EXTRA_MOUNTS:
+        text = text.replace("'" + mount, "'" + ROOT + mount)
+    return text
 
 
 def read_settings() -> dict[str, str]:
@@ -63,8 +78,67 @@ def write_settings(data: dict[str, str]) -> None:
             fh.write(f"{k}={v}\n")
 
 
+# Пакеты макета: имя, путь APK, версия, системный, даты установки/обновления.
+# Размеры и иконки берутся из настоящих APK в макете файловой системы, поэтому
+# экран приложений проверяется целиком, без телефона.
+MOCK_PACKAGES = [
+    ("com.example.chat", "2.24.3.79", False, "2022-11-03 18:22:41", "2024-05-17 09:07:12", "2024-06-01 20:15:03"),
+    ("com.example.player", "5.1.0", False, "2023-02-11 10:00:00", "2023-02-11 10:00:00", "2024-03-14 08:11:00"),
+    ("com.android.settings", "13", True, "2022-01-01 00:00:00", "2022-01-01 00:00:00", "2024-06-10 12:00:00"),
+]
+
+
+def mock_dumpsys_packages() -> str:
+    lines = ["Packages:"]
+    for index, (pkg, version, system, installed, updated, used) in enumerate(MOCK_PACKAGES, start=1):
+        lines.append(f"  Package [{pkg}] (mock{index}):")
+        lines.append(f"    userId={10100 + index}")
+        lines.append(f"    codePath={apk_path_of(pkg)}")
+        lines.append(f"    versionName={version}")
+        lines.append(f"    firstInstallTime={installed}")
+        lines.append(f"    lastUpdateTime={updated}")
+        lines.append(f"    lastTimeUsed={used}")
+        lines.append("    pkgFlags=[ HAS_CODE ALLOW_CLEAR_USER_DATA" + (" SYSTEM" if system else "") + " ]")
+        lines.append("    enabled=true")
+    return "\n".join(lines) + "\n"
+
+
+def apk_path_of(package: str) -> str:
+    if package.startswith("com.android"):
+        return f"/system/priv-app/{package.split('.')[-1].title()}/base.apk"
+    return f"/data/app/~~mock==/{package}-1/base.apk"
+
+
+def mock_package_list() -> str:
+    return "".join(f"package:{apk_path_of(pkg) if not pkg.startswith('com.android') else apk_path_of(pkg).replace('/base.apk', '/X.apk')}={pkg}\n" for pkg, *_ in MOCK_PACKAGES)
+
+
+def mock_diskstats() -> str:
+    import base64, struct, zlib
+
+    names = [pkg for pkg, *_ in MOCK_PACKAGES]
+    data = [320_000_000, 140_000_000, 8_000_000]
+    cache = [42_000_000, 6_000_000, 0]
+    pack = lambda values: base64.b64encode(zlib.compress(struct.pack(f"<{len(values)}q", *values))).decode()
+    return (
+        f"packageSizes: {','.join(names)}\n"
+        f"packageDataSizes: {pack(data)}\n"
+        f"cacheSizes: {pack(cache)}\n"
+    )
+
+
 def handle_shell(command: str) -> int:
     cmd = command.strip()
+
+    if cmd == "dumpsys package packages":
+        sys.stdout.write(mock_dumpsys_packages())
+        return 0
+    if cmd.startswith("pm list packages"):
+        sys.stdout.write(mock_package_list())
+        return 0
+    if cmd == "dumpsys diskstats":
+        sys.stdout.write(mock_diskstats())
+        return 0
 
     if cmd.startswith("getprop"):
         key = cmd[len("getprop"):].strip()
@@ -123,7 +197,12 @@ def handle_shell(command: str) -> int:
     # Всё остальное — настоящая оболочка на макете файловой системы.
     # Вывод переводим обратно в «телефонные» пути, как у настоящего adb.
     proc = subprocess.run(["sh", "-c", rewrite(cmd)], capture_output=True, text=True)
-    out = proc.stdout.replace(ROOT, MAP_PREFIX)
+    # Обратная замена: пути макета -> пути «телефона». Важен порядок, иначе
+    # /data/app превратился бы в /storage/emulated/0/data/app.
+    out = proc.stdout.replace(ROOT + MAP_PREFIX, MAP_PREFIX)
+    for mount in EXTRA_MOUNTS:
+        out = out.replace(ROOT + mount, mount)
+    out = out.replace(ROOT, MAP_PREFIX)
     err = proc.stderr.replace(ROOT, MAP_PREFIX)
     sys.stdout.write(out)
     sys.stderr.write(err)

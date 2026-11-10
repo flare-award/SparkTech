@@ -93,3 +93,60 @@ def test_connection_states_documented():
     # и UI умеет их отображать
     for key in ("ready", "unauthorized", "unavailable", "no_device"):
         assert key in JS
+
+
+# ------------------------------------------------- новые экраны и иконки
+
+def test_icons_are_bundled_locally():
+    """Иконки не должны грузиться из интернета: набор лежит рядом со страницей."""
+    assert (STATIC / "icons.js").is_file()
+    assert (STATIC / "icons-LICENSE.txt").is_file()
+    icons_js = (STATIC / "icons.js").read_text(encoding="utf-8")
+    assert "window.SparkIcons" in icons_js
+    assert "ISC" in icons_js  # лицензия указана в самом файле
+    # Ссылка на сайт проекта в комментарии допустима, а вот загрузки по сети
+    # быть не должно: проверяем отсутствие кода, который что-то подгружает.
+    for marker in ("<script src=", "fetch(", "XMLHttpRequest", "@import", "url(http"):
+        assert marker not in icons_js, f"icons.js что-то загружает: {marker}"
+
+
+def test_html_has_no_cdn_references():
+    for marker in ("cdn.", "unpkg.com", "jsdelivr", "googleapis", "fonts."):
+        assert marker not in HTML, f"внешняя ссылка в интерфейсе: {marker}"
+
+
+def test_scripts_order_loads_icons_before_app():
+    assert HTML.index("/static/icons.js") < HTML.index("/static/app.js")
+
+
+def test_every_used_icon_is_bundled():
+    """Каждая иконка из data-icon и iconSvg(\"…\") есть в наборе."""
+    icons_js = (STATIC / "icons.js").read_text(encoding="utf-8")
+    used = set(re.findall(r'data-icon="([a-z0-9-]+)"', HTML))
+    used |= set(re.findall(r'iconSvg\("([a-z0-9-]+)"\)', JS))
+    used |= set(re.findall(r'iconEl\("([a-z0-9-]+)"', JS))
+    used |= set(re.findall(r'"([a-z0-9-]+)"', " ".join(
+        re.findall(r"(?:APP_CATEGORY_ICON|EXT_ICON)\s*=\s*\{[^}]*\}", JS)
+    )))
+    missing = sorted(name for name in used if f'"{name}":' not in icons_js)
+    assert not missing, f"нет в наборе иконок: {missing}"
+
+
+def test_apps_screen_is_wired():
+    for element in ("#view-apps", "#apps-body", "#apps-load", "#apps-filter-query",
+                    "#apps-sort", "#apps-notes", "#apps-stats"):
+        assert element.lstrip("#") in html_ids(), f"нет элемента {element}"
+    assert "loadApps" in JS and "renderAppsTable" in JS
+
+
+def test_preview_and_free_space_elements_exist():
+    for element in ("modal-preview", "preview-body", "free-card", "free-after",
+                    "free-pending", "download-selected", "set-preview"):
+        assert element in html_ids(), f"нет элемента {element}"
+
+
+def test_header_layout_does_not_collide():
+    """Шапка экрана — сетка с переносом, а не плоский flex (был баг наезда)."""
+    block = CSS.split(".view-head.row {", 1)[1].split("}", 1)[0]
+    assert "grid-template-columns" in block
+    assert "minmax(0, 1fr)" in block

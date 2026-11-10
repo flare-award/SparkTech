@@ -449,6 +449,60 @@ def _typed_string(data: bytes, pos: int, strings: StringPool) -> str:
 # ---------------------------------------------------------------- APK-доступ
 
 
+def read_zip_entries(data: bytes, *, only: str | None = None) -> dict[str, bytes]:
+    """Прочитать файлы zip по локальным заголовкам (без центрального каталога).
+
+    Нужно для APK, прочитанных частично: ``adb exec-out head -c N`` обрезает
+    архив, и центральный каталог в конце файла теряется. Локальные заголовки
+    при этом целы, и по ним можно достать ``resources.arsc`` и иконку.
+
+    Метод deflate (8) и store (0) — единственные, которые встречаются в APK.
+    Битые или неполные записи пропускаются: лучше меньше данных, чем исключение.
+    """
+    import zlib
+
+    result: dict[str, bytes] = {}
+    offset = 0
+    total = len(data)
+    while offset + 30 <= total:
+        signature = data[offset:offset + 4]
+        if signature != b"PK\x03\x04":
+            break
+        try:
+            method = struct.unpack_from("<H", data, offset + 8)[0]
+            compressed_size = struct.unpack_from("<I", data, offset + 18)[0]
+            name_len = struct.unpack_from("<H", data, offset + 26)[0]
+            extra_len = struct.unpack_from("<H", data, offset + 28)[0]
+        except struct.error:
+            break
+        name_start = offset + 30
+        name_end = name_start + name_len
+        if name_end > total:
+            break
+        try:
+            name = data[name_start:name_end].decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — имя не критично
+            name = ""
+        body_start = name_end + extra_len
+        body_end = body_start + compressed_size
+        if body_end > total:
+            # Файл не влез в прочитанную часть: дальше искать бессмысленно.
+            break
+        if name and (only is None or name == only):
+            body = data[body_start:body_end]
+            if method == 0:
+                result[name] = body
+            elif method == 8:
+                try:
+                    result[name] = zlib.decompress(body, -15)
+                except zlib.error:
+                    pass
+        if only is not None and name == only:
+            break
+        offset = body_end
+    return result
+
+
 @dataclass
 class ApkResources:
     """Ресурсы APK, прочитанного с устройства (начало файла)."""
@@ -459,29 +513,36 @@ class ApkResources:
 
     @classmethod
     def from_apk_intro(cls, data: bytes) -> "ApkResources":
-        """Открыть APK из прочитанных первых байт.
+        """Открыть APK, прочитанный с телефона (возможно, только начало файла).
 
-        Zip-архив читается по локальным заголовкам, поэтому начала файла
-        достаточно для ``resources.arsc`` и небольшой PNG-иконки. Если файл
-        обрезан так, что нужного файла нет, возвращается понятная ошибка.
+        ``head -c`` отдаёт обрезанный zip: у него есть локальные заголовки
+        файлов, но нет центрального каталога в конце. Поэтому сначала
+        пробуем обычное чтение, а если каталога нет — обходим локальные
+        заголовки (см. :func:`read_zip_entries`). Так SparkTech читает
+        APK частично и не выкачивает сотни мегабайт ради иконки.
         """
         if not data.startswith(b"PK\x03\x04"):
             raise ResourceTableError("Файл не похож на APK (zip)")
+        entries: dict[str, bytes] = {}
         try:
-            archive = zipfile.ZipFile(BytesIO(data))
-        except zipfile.BadZipFile as exc:
-            raise ResourceTableError(f"APK прочитан не полностью: {exc}") from exc
-        with archive:
-            names = set(archive.namelist())
-            if "resources.arsc" not in names:
-                raise ResourceTableError("В APK нет resources.arsc")
-            resources = ResourceTable(archive.read("resources.arsc"))
-            manifest = ManifestInfo()
-            if "AndroidManifest.xml" in names:
-                try:
-                    manifest = parse_manifest(archive.read("AndroidManifest.xml"))
-                except ResourceTableError:
-                    manifest = ManifestInfo()
+            with zipfile.ZipFile(BytesIO(data)) as archive:
+                for name in archive.namelist():
+                    if name in ("resources.arsc", "AndroidManifest.xml") or name.startswith("res/"):
+                        entries[name] = archive.read(name)
+        except zipfile.BadZipFile:
+            entries = read_zip_entries(data)
+        if "resources.arsc" not in entries:
+            raise ResourceTableError(
+                "В прочитанной части APK нет resources.arsc (файл слишком большой "
+                "или прочитан не полностью)"
+            )
+        resources = ResourceTable(entries["resources.arsc"])
+        manifest = ManifestInfo()
+        if "AndroidManifest.xml" in entries:
+            try:
+                manifest = parse_manifest(entries["AndroidManifest.xml"])
+            except ResourceTableError:
+                manifest = ManifestInfo()
         return cls(resources=resources, manifest=manifest, zip_data=data)
 
     def application_label(self) -> str:
@@ -499,13 +560,14 @@ class ApkResources:
         return self.resources.file_of(self.manifest.icon_res_id)
 
     def read_file(self, name: str) -> bytes:
+        """Прочитать файл из APK (в том числе из обрезанного архива)."""
         if not name:
             return b""
-        with zipfile.ZipFile(BytesIO(self.zip_data)) as archive:
-            try:
+        try:
+            with zipfile.ZipFile(BytesIO(self.zip_data)) as archive:
                 return archive.read(name)
-            except KeyError:
-                return b""
+        except (zipfile.BadZipFile, KeyError):
+            return read_zip_entries(self.zip_data, only=name).get(name, b"")
 
     def icon_bytes(self) -> bytes:
         """Содержимое иконки (PNG/WebP) или пустые байты."""

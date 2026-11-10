@@ -104,3 +104,35 @@ def test_truncated_apk_does_not_crash():
 def test_broken_resource_table_is_rejected():
     with pytest.raises(ResourceTableError):
         ResourceTable(b"\x00" * 40)
+
+
+def test_truncated_zip_is_read_through_local_headers():
+    """APK, прочитанный через `head -c`, не имеет центрального каталога.
+
+    Именно так SparkTech читает APK с телефона: чтобы показать название и
+    иконку, не нужно выкачивать весь файл.
+    """
+    full = build_apk(label="Обрезанный APK")
+    truncated = full[: len(full) - 6]  # ломаем центральный каталог в конце
+    resources = ApkResources.from_apk_intro(truncated)
+    assert resources.application_label() == "Обрезанный APK"
+    assert resources.icon_bytes().startswith(b"\x89PNG")
+
+
+def test_local_header_reader_skips_unknown_entries():
+    from sparktech.core.arsc import read_zip_entries
+
+    data = build_apk()
+    entries = read_zip_entries(data)
+    assert "resources.arsc" in entries
+    assert "AndroidManifest.xml" in entries
+    only = read_zip_entries(data, only="res/mipmap/ic_launcher.png")
+    assert list(only) == ["res/mipmap/ic_launcher.png"]
+    assert only["res/mipmap/ic_launcher.png"].startswith(b"\x89PNG")
+
+
+def test_local_header_reader_on_garbage_returns_empty():
+    from sparktech.core.arsc import read_zip_entries
+
+    assert read_zip_entries(b"PK\x03\x04 truncated") == {}
+    assert read_zip_entries(b"") == {}

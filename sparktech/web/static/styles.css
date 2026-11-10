@@ -98,7 +98,12 @@ code { font-family: "Cascadia Mono", Consolas, "SF Mono", monospace; font-size: 
 .nav-item:hover:not(:disabled) { background: rgba(56,189,248,.07); color: var(--text); }
 .nav-item.active { background: rgba(56,189,248,.12); border-color: rgba(56,189,248,.28); color: #e8f6ff; }
 .nav-item:disabled { opacity: .4; cursor: not-allowed; }
-.nav-ico { width: 18px; text-align: center; opacity: .85; }
+.nav-ico { width: 18px; height: 18px; display: inline-grid; place-items: center; opacity: .85; flex: 0 0 auto; }
+.nav-ico svg, .begin-ico svg, .btn svg, .icon-btn svg, .tiny-btn svg { width: 100%; height: 100%; display: block; }
+.btn svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.tiny-btn svg { width: 13px; height: 13px; }
+.begin-ico { font-size: 19px; color: #7dd3fc; width: 30px; display: inline-grid; place-items: center; }
+.begin-ico svg { width: 22px; height: 22px; }
 
 .sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
 .privacy-note { display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--text-faint); line-height: 1.35; }
@@ -109,10 +114,26 @@ code { font-family: "Cascadia Mono", Consolas, "SF Mono", monospace; font-size: 
 .view { display: flex; flex-direction: column; gap: 18px; animation: fade .18s ease; }
 @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
 
+/* Шапка экрана. Раньше здесь был плоский flex: длинный заголовок и блок
+   кнопок делили одну строку, из-за чего «Очистка» наезжала на «Настройки
+   сканирования», а описание сжималось до одного слова в строке. Теперь
+   левая часть — самостоятельный блок с минимальной шириной, а кнопки
+   переносятся на новую строку, когда места мало. */
 .view-head { display: flex; flex-direction: column; gap: 6px; }
-.view-head.row { flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
-.view-head p { max-width: 780px; }
-.head-actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+.view-head.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px 24px;
+}
+.view-head > div:first-child { min-width: 0; }
+.view-head h1 { overflow-wrap: anywhere; }
+.view-head p { max-width: 780px; overflow-wrap: anywhere; }
+.head-actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 1080px) {
+  .view-head.row { grid-template-columns: minmax(0, 1fr); }
+  .head-actions { justify-content: flex-start; }
+}
 
 /* ------------------------------------------------------------------ карточки */
 .card {
@@ -232,7 +253,6 @@ select:focus, input:focus { outline: 2px solid rgba(56,189,248,.35); outline-off
 .begin-btn:disabled { opacity: .45; cursor: not-allowed; }
 .begin-btn strong { display: block; font-size: 13.5px; }
 .begin-btn small { color: var(--text-faint); font-size: 11.5px; }
-.begin-ico { font-size: 19px; color: #7dd3fc; width: 30px; text-align: center; }
 
 .empty { padding: 16px; text-align: center; font-size: 12.5px; }
 
@@ -273,7 +293,7 @@ select:focus, input:focus { outline: 2px solid rgba(56,189,248,.35); outline-off
 
 .table-head, .row {
   display: grid;
-  grid-template-columns: 30px minmax(220px, 1fr) 170px 96px 150px 96px;
+  grid-template-columns: 30px minmax(240px, 1fr) 132px 150px 92px 138px 116px;
   gap: 10px; align-items: center;
 }
 .table-head {
@@ -407,7 +427,7 @@ select:focus, input:focus { outline: 2px solid rgba(56,189,248,.35); outline-off
 /* --------------------------------------------------------------- адаптивность */
 @media (max-width: 1180px) {
   .grid.two { grid-template-columns: 1fr; }
-  .table-head, .row { grid-template-columns: 28px minmax(160px, 1fr) 130px 84px 120px 84px; }
+  .table-head, .row { grid-template-columns: 28px minmax(150px, 1fr) 108px 120px 80px 116px 100px; }
 }
 @media (max-width: 900px) {
   .app { flex-direction: column; }
@@ -418,9 +438,101 @@ select:focus, input:focus { outline: 2px solid rgba(56,189,248,.35); outline-off
   .begin-grid { grid-template-columns: 1fr; }
   .table-head { display: none; }
   .row { grid-template-columns: 28px 1fr; grid-auto-rows: auto; row-gap: 4px; }
-  .row-cat, .row .num, .risk, .row-actions-cell { grid-column: 2; }
+  .row-cat, .row .num, .risk, .row-actions-cell, .row-date { grid-column: 2; }
   .row-actions-cell { justify-content: flex-start; }
 }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #22304d; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ------------------------------------------------------- иконки (Lucide) */
+.ico { display: inline-grid; place-items: center; width: 16px; height: 16px; vertical-align: -3px; }
+.ico svg { width: 100%; height: 100%; }
+h3 .ico { color: var(--accent); margin-right: 6px; }
+.search > span[data-icon] { position: absolute; left: 11px; color: var(--text-faint); width: 15px; height: 15px; display: grid; }
+.search > span[data-icon] svg { width: 15px; height: 15px; }
+
+/* ------------------------------------------- «сколько места освободится» */
+.free-card { gap: 12px; }
+.free-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.free-head h3 { display: flex; align-items: center; gap: 8px; }
+.free-body { display: flex; flex-direction: column; gap: 10px; }
+.free-bar {
+  height: 14px; border-radius: 999px; overflow: hidden; display: flex;
+  background: #0a1526; border: 1px solid var(--border-soft);
+}
+.free-used { background: linear-gradient(90deg, #334155, #475569); transition: width .3s ease; }
+.free-pending { background: linear-gradient(90deg, #0ea5e9, #38bdf8); transition: width .3s ease; }
+.free-legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 12.5px; color: var(--text-dim); }
+.free-legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.free-legend .dot.used { background: #475569; }
+.free-legend .dot.pending { background: #38bdf8; }
+.free-legend .dot.free { background: var(--green); }
+.free-legend .free-after { margin-left: auto; color: var(--text); }
+.free-legend .free-after strong { color: #9df3d0; font-size: 14px; }
+
+/* -------------------------------------------------------- превью в списке */
+.row-preview {
+  width: 40px; height: 40px; border-radius: 8px; overflow: hidden; flex: 0 0 auto;
+  background: #0b1526; border: 1px solid var(--border-soft);
+  display: grid; place-items: center; color: var(--text-faint); cursor: pointer; position: relative;
+}
+.row-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.row-preview svg { width: 17px; height: 17px; }
+.row-preview .play-badge {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: rgba(4, 9, 18, .35); color: #fff;
+}
+.row-preview .play-badge svg { width: 15px; height: 15px; }
+.file-cell { display: flex; gap: 11px; align-items: center; min-width: 0; }
+.file-cell .file-text { min-width: 0; }
+.row-date { display: flex; flex-direction: column; gap: 1px; font-size: 12px; color: var(--text-dim); }
+.row-date .ago { font-size: 11px; color: var(--text-faint); }
+
+.modal-wide { width: min(1000px, 100%); }
+.preview-body { align-items: center; justify-content: center; min-height: 240px; background: #070d18; }
+.preview-body img, .preview-body video {
+  max-width: 100%; max-height: 62vh; border-radius: 10px; background: #000; display: block;
+}
+.preview-body .preview-text {
+  white-space: pre-wrap; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px;
+  width: 100%; max-height: 58vh; overflow: auto; color: var(--text-dim); padding: 12px;
+}
+.preview-note { font-size: 12.5px; color: #ffd9a0; text-align: center; max-width: 560px; line-height: 1.5; }
+
+/* ---------------------------------------------------------- приложения */
+.apps-table-head, .app-row {
+  display: grid;
+  grid-template-columns: 44px minmax(220px, 1fr) 118px 118px 118px 104px;
+  gap: 12px; align-items: center;
+}
+.app-row { padding: 10px 14px; border-bottom: 1px solid rgba(34, 48, 77, .5); font-size: 13px; }
+.app-row:hover { background: rgba(56, 189, 248, .045); }
+.app-icon {
+  width: 36px; height: 36px; border-radius: 9px; overflow: hidden; background: #0b1526;
+  border: 1px solid var(--border-soft); display: grid; place-items: center; color: var(--text-faint);
+}
+.app-icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.app-icon svg { width: 17px; height: 17px; }
+.app-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-pkg { font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-cell { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column; gap: 1px; }
+.app-cell .ago { font-size: 11px; color: var(--text-faint); }
+.app-size { text-align: right; }
+.app-size strong { font-size: 13.5px; }
+.app-size .breakdown { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.chip.system { background: rgba(148, 163, 184, .12); color: #cbd5e1; border-color: rgba(148, 163, 184, .25); }
+.chip.critical { background: rgba(248, 113, 113, .1); color: #ffbcbc; border-color: rgba(248, 113, 113, .25); }
+.app-details { grid-column: 1 / -1; padding: 8px 0 4px 56px; display: flex; flex-direction: column; gap: 6px; }
+.app-details .reason b { color: var(--text); font-weight: 600; }
+
+@media (max-width: 1180px) {
+  .apps-table-head, .app-row { grid-template-columns: 40px minmax(160px, 1fr) 100px 100px 96px; }
+  .apps-table-head span:nth-child(5), .app-row > :nth-child(5) { display: none; }
+}
+@media (max-width: 900px) {
+  .apps-table-head { display: none; }
+  .app-row { grid-template-columns: 40px 1fr; row-gap: 4px; }
+  .app-row > :nth-child(n+3) { grid-column: 2; }
+  .app-size { text-align: left; }
+}

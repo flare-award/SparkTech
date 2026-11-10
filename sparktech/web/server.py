@@ -240,9 +240,19 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("Результат не найден (возможно, приложение было перезапущено)", 404)
             # items — список (в интерфейсе это массив); в памяти он хранится
             # словарём по пути для быстрого поиска.
+            result = dict(stored["result"])
+            # «Сколько станет свободно» считается на сервере по данным df,
+            # чтобы интерфейс не изобретал числа сам.
+            from ..core.models import ScanResult
+
+            probe = ScanResult(serial=stored["serial"], model=None)
+            probe.storage_free = result.get("storage_free")
+            probe.storage_total = result.get("storage_total")
+            result["free_now"] = probe.storage_free
+            result["free_after_all"] = probe.free_after_delete(result.get("total_size") or 0)
             self.send_json(200, {
                 "ok": True,
-                "result": stored["result"],
+                "result": result,
                 "items": list(stored["items"].values()),
             })
             return
