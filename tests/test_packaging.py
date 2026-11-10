@@ -108,10 +108,28 @@ def test_build_scripts_exist_and_mention_license():
 
 
 def test_build_scripts_do_not_download_third_party_binaries():
-    """Программа не должна незаметно скачивать adb: только ручное размещение."""
+    """Программа и сборка не должны незаметно скачивать adb: только вручную.
+
+    Разрешён локальный HTTP-опрос собственного сервера (smoke-тест exe),
+    запрещено скачивание сторонних бинарников.
+    """
+    patterns = (
+        r"Invoke-WebRequest[^\n]*platform-tools",
+        r"curl[^\n]*platform-tools",
+        r"wget[^\n]*platform-tools",
+        r"Start-BitsTransfer",
+        r"DownloadFile",
+    )
     for name in ("scripts/build_windows.ps1", "scripts/build_windows.bat", ".github/workflows/build.yml"):
         text = (ROOT / name).read_text(encoding="utf-8")
-        assert not re.search(r"(Invoke-WebRequest|curl\s+.*platform-tools|wget\s+.*platform-tools)", text), name
+        for pattern in patterns:
+            assert not re.search(pattern, text, flags=re.IGNORECASE), f"{name}: {pattern}"
+
+
+def test_build_scripts_mention_official_page_for_manual_download():
+    """Пользователю показывают официальную страницу, а не ссылку на зеркало."""
+    ps1 = (ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
+    assert "https://developer.android.com/tools/releases/platform-tools" in ps1
 
 
 def test_ci_builds_windows_exe():
@@ -171,3 +189,63 @@ def test_readme_covers_required_topics():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     for topic in ("Установк", "Сборк", ".exe", "adb", "Platform-Tools", "Ограничен", "безопасн"):
         assert topic.lower() in readme.lower(), f"в README нет раздела про «{topic}»"
+
+
+def spec_excludes() -> set[str]:
+    """Прочитать excludes= из SparkTech.spec (без запуска PyInstaller)."""
+    text = SPEC.read_text(encoding="utf-8")
+    block = re.search(r"excludes=\[([^\]]*)\]", text)
+    assert block, "в spec нет excludes="
+    return set(re.findall(r"[\"']([^\"']+)[\"']", block.group(1)))
+
+
+def app_import_closure() -> set[str]:
+    """Все stdlib-модули, которые реально импортирует приложение.
+
+    Импортируем точку входа и сервер во временном процессе и смотрим, что
+    оказалось в sys.modules: так ловится именно транзитивная зависимость
+    (например, http.server → email), а не только прямые импорты.
+    """
+    import subprocess
+    import sys as _sys
+
+    code = (
+        "import json, sys;"
+        "import sparktech.__main__;"
+        "import sparktech.web.server;"
+        "from sparktech.core import adb, classify, deleter, jobs, models, optimizer, process, remote_path, scanner, store;"
+        "top = {m.split('.')[0] for m in sys.modules};"
+        "print(json.dumps(sorted(top)))"
+    )
+    out = subprocess.run(
+        [_sys.executable, "-c", code],
+        capture_output=True, text=True, cwd=str(ROOT), timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    import json as _json
+
+    return set(_json.loads(out.stdout))
+
+
+def test_spec_never_excludes_modules_app_needs():
+    """Собранный .exe упал с ModuleNotFoundError: No module named 'email',
+    потому что spec исключал email, а http.server его импортирует."""
+    excluded = spec_excludes()
+    needed = app_import_closure()
+    # stdlib-модули, без которых приложение не запускается
+    must_keep = {"email", "http", "json", "socket", "threading", "urllib", "secrets"}
+    assert must_keep <= needed, f"неожиданно не импортируется: {must_keep - needed}"
+    broken = sorted((excluded & needed) | (excluded & must_keep))
+    assert not broken, (
+        f"spec исключает модули, нужные приложению при старте: {broken}. "
+        "Собранный .exe упадёт с ModuleNotFoundError."
+    )
+
+
+def test_spec_excludes_only_safe_modules():
+    allowed = {"tkinter", "unittest", "pytest", "pydoc", "test", "idlelib", "turtle"}
+    extra = sorted(spec_excludes() - allowed)
+    assert not extra, (
+        f"подозрительные исключения в spec: {extra}. Исключать можно только модули, "
+        "не нужные приложению и его зависимостям."
+    )

@@ -81,6 +81,36 @@ jobs:
         run: |
           if (-not (Test-Path "dist/SparkTech.exe")) { throw "SparkTech.exe не создан" }
           Get-Item dist/SparkTech.exe | Select-Object Name, Length
+
+      # Запускаем собранный .exe: проверяем, что все модули (включая
+      # транзитивные вроде email из http.server) попали в архив и приложение
+      # реально поднимает локальный сервер. Именно этот шаг ловит ошибки
+      # вроде ModuleNotFoundError, которые видны только при запуске.
+      - name: Smoke-тест собранного exe
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/SparkTech.exe").Path
+          $proc = Start-Process -FilePath $exe -ArgumentList "--no-window", "--port", "8123" -PassThru -NoNewWindow
+          $ok = $false
+          $errorText = ""
+          try {
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($proc.HasExited) { break }
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8123/api/health" -UseBasicParsing -TimeoutSec 2
+                if ($resp.StatusCode -eq 200 -and $resp.Content -match "SparkTech") { $ok = $true; break }
+              } catch { }
+            }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+          if (-not $ok) {
+            $errorText = "exe не поднял локальный сервер (код выхода: $($proc.ExitCode))"
+            Write-Output "::error title=exe-smoke::$errorText"
+            exit 1
+          }
+          Write-Output "exe запустился и ответил на /api/health"
       - uses: actions/upload-artifact@v4
         with:
           name: SparkTech-windows-exe

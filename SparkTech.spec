@@ -78,7 +78,10 @@ a = Analysis(  # noqa: F821
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "unittest", "pytest", "pydoc", "email", "http.server.hooks"],
+    # ВАЖНО: не исключать модули, которые тянет http.server (в частности
+    # `email`): иначе собранный .exe падает на старте с
+    # ModuleNotFoundError: No module named 'email'.
+    excludes=["tkinter", "unittest", "pytest", "pydoc"],
     noarchive=False,
 )
 
