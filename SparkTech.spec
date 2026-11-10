@@ -49,8 +49,11 @@ except Exception:  # pywebview необязателен
 
 hiddenimports += collect_submodules("sparktech")
 
+# PyInstaller запускает указанный скрипт как отдельный файл, поэтому
+# sparktech/__main__.py (с относительными импортами) использовать нельзя —
+# берём тонкую обёртку с абсолютным импортом.
 a = Analysis(  # noqa: F821
-    [str(ROOT / "sparktech" / "__main__.py")],
+    [str(ROOT / "run_sparktech.py")],
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,

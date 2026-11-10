@@ -32,7 +32,9 @@ def test_spec_is_valid_python_and_targets_entrypoint():
     tree = ast.parse(SPEC.read_text(encoding="utf-8"))
     assert isinstance(tree, ast.Module)
     text = SPEC.read_text(encoding="utf-8")
-    assert '"__main__.py"' in text
+    # точка входа — обёртка с абсолютным импортом (см. test_entrypoint_wrapper)
+    assert '"run_sparktech.py"' in text
+    assert "packages\" / \"__main__.py\"" not in text
     assert 'name="SparkTech"' in text
     assert "console=False" in text  # GUI без консольного окна
 
@@ -110,6 +112,25 @@ def test_pyproject_packages_static():
     assert data["project"]["dependencies"] == []  # ядро на stdlib
     assert "static/*" in data["tool"]["setuptools"]["package-data"]["sparktech.web"]
     assert data["project"]["scripts"]["sparktech"].endswith("main")
+
+
+def test_entrypoint_wrapper_uses_absolute_import():
+    """PyInstaller не может запустить пакетный __main__.py с относительными
+    импортами — это проверено в CI и зафиксировано этим тестом."""
+    wrapper = (ROOT / "run_sparktech.py").read_text(encoding="utf-8")
+    assert "from sparktech.__main__ import main" in wrapper
+    main_module = (ROOT / "sparktech" / "__main__.py").read_text(encoding="utf-8")
+    assert "from . import APP_NAME" in main_module  # относительный импорт остаётся
+    # обёртка должна быть в состоянии сообщить версию
+    import subprocess
+    import sys as _sys
+
+    out = subprocess.run(
+        [_sys.executable, str(ROOT / "run_sparktech.py"), "--version"],
+        capture_output=True, text=True, cwd=str(ROOT), timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "1.0.0" in out.stdout
 
 
 def test_entrypoint_importable():
