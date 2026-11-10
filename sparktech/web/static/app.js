@@ -243,7 +243,13 @@ function renderDevices(payload) {
   $("#adb-info").innerHTML = "";
   if (adb.found) {
     $("#adb-info").appendChild(h("div", {}, "Найден: ", h("code", {}, adb.path || "adb из PATH")));
-    if (payload.adb?.error) $("#adb-info").appendChild(h("div", { class: "warn-line" }, payload.adb.error));
+    if (payload.adb?.error) {
+      $("#adb-info").appendChild(h("div", { class: "warn-line" }, payload.adb.error));
+      if (payload.adb.hint) $("#adb-info").appendChild(h("div", { class: "small muted" }, payload.adb.hint));
+      $("#adb-info").appendChild(h("button", {
+        class: "btn ghost small", onclick: () => switchView("settings"),
+      }, "Исправить путь к adb"));
+    }
   } else {
     $("#adb-info").appendChild(h("div", {}, adb.error || "Официальный adb не обнаружен."));
     $("#adb-info").appendChild(h("div", { class: "small" }, "Скачайте Platform-Tools с developer.android.com и укажите путь в настройках."));
@@ -970,11 +976,20 @@ async function loadSettings() {
 $("#save-adb-path").addEventListener("click", async () => {
   const path = $("#adb-path-input").value.trim();
   try {
-    await api("/api/settings", { method: "POST", body: { adb_path: path } });
-    toast("Путь к adb сохранён", "ok");
+    const res = await api("/api/settings", { method: "POST", body: { adb_path: path } });
+    if (res.adb_problem) {
+      toast(res.adb_problem, "err", 9000);
+    } else if (res.adb_resolved) {
+      $("#adb-path-input").value = res.adb_resolved;
+      toast(path && path !== res.adb_resolved
+        ? `adb найден автоматически: ${res.adb_resolved}`
+        : "Путь к adb сохранён", "ok", 7000);
+    } else {
+      toast("Путь сохранён", "ok");
+    }
     await refreshDevices();
     loadSettings();
-  } catch (err) { toast(err.message, "err"); }
+  } catch (err) { toast(err.message, "err", 9000); }
 });
 
 $("#open-data-dir").addEventListener("click", () => {

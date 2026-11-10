@@ -305,9 +305,49 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings":
             app.store.update_settings(payload)
+            resolved = None
+            problem = None
             if payload.get("adb_path") is not None:
-                app.adb.set_path(str(payload.get("adb_path") or ""))
-            self.send_json(200, {"ok": True, "settings": app.settings_from_store().to_dict()})
+                typed = str(payload.get("adb_path") or "").strip()
+                # Пользователь может ввести папку, путь в кавычках или весь SDK —
+                # сначала приводим ввод к файлу adb.exe (или оставляем как есть).
+                normalized = app.adb.normalize_user_path(typed)
+                # Если ввод был папкой (или путём в кавычках), normalize вернёт
+                # файл adb внутри неё. Если ввод был путём к файлу — вернёт его
+                # же; тогда проверяем, что файл существует.
+                raw = normalized if Path(normalized).is_file() else typed
+                if raw:
+                    # Сначала проверяем ИМЕННО введённый путь: resolve() умеет
+                    # откатываться на автопоиск, и это скрыло бы опечатку.
+                    if not Path(raw).is_file():
+                        problem = (
+                            f"В указанном пути adb не найден: {typed}. Проверены «{raw}» "
+                            "и файлы adb.exe/adb внутри папки. Укажите папку platform-tools "
+                            "или сам файл adb.exe; автопоиск продолжит работать."
+                        )
+                        resolved = None
+                        app.adb.set_path(str(app.store.load_settings().get("adb_path") or ""))
+                        raw = ""
+                if raw:
+                    app.adb.set_path(raw)  # применяется только если файл существует
+                    try:
+                        resolved = app.adb.resolve(force=True)
+                        app.store.update_settings({"adb_path": resolved})
+                    except AdbNotFound:
+                        # Путь не применён и не сохраняется: иначе он перекрывал бы
+                        # автоматический поиск рабочего adb.
+                        problem = (
+                            f"В указанном пути adb не найден: {typed}. Проверены вариант "
+                            f"«{raw}» и файлы adb.exe/adb внутри папки. Укажите папку "
+                            "platform-tools или сам файл adb.exe."
+                        )
+                        app.adb.set_path(str(app.store.load_settings().get("adb_path") or ""))
+            self.send_json(200, {
+                "ok": True,
+                "settings": app.settings_from_store().to_dict(),
+                "adb_resolved": resolved,
+                "adb_problem": problem,
+            })
             return
         if path == "/api/scan":
             self._start_scan(payload)
@@ -356,24 +396,28 @@ class Handler(BaseHTTPRequestHandler):
                 "status_label": "ADB не найден",
             }
         try:
-            adb_version = app.adb.version()
-        except (CommandError, CommandTimeout):
-            adb_version = None
+            adb_version, adb_problem = app.adb.version_diagnostics()
+        except (CommandError, CommandTimeout) as exc:
+            adb_version, adb_problem = None, str(exc)
         if adb_version is None:
+            # Показываем настоящую причину, а не догадку: раньше любая ошибка
+            # превращалась в «файл повреждён», что путало пользователей.
             return {
                 "ok": True,
                 "adb": {
                     "found": True,
                     "path": adb_path,
-                    "error": (
-                        "adb.exe найден, но не отвечает на запрос версии. Возможно, файл повреждён "
-                        "или это не официальная сборка Platform-Tools."
+                    "error": adb_problem or "adb не сообщил версию",
+                    "hint": (
+                        "Проверьте, что указан именно файл adb.exe (а не папка platform-tools). "
+                        "Если путь введён вручную, SparkTech попробует найти adb.exe в этой папке "
+                        "сам. Также убедитесь, что антивирус не блокирует запуск."
                     ),
                     "download_url": ADB_DOWNLOAD_URL,
                 },
                 "devices": [],
                 "status": "adb_error",
-                "status_label": "ADB не работает",
+                "status_label": "ADB не запускается",
             }
         try:
             app.adb.start_server()

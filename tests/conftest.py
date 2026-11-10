@@ -40,6 +40,13 @@ class FakeAdb:
     def version(self) -> str:
         return "1.0.41"
 
+    def version_diagnostics(self):
+        return "1.0.41", None
+
+    @staticmethod
+    def normalize_user_path(raw: str) -> str:
+        return raw.strip()
+
     def resolve(self) -> str:
         return "/fake/adb"
 

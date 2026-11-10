@@ -141,8 +141,21 @@ class AdbClient:
         return candidates
 
     def resolve(self, force: bool = False) -> str:
-        if self._adb_path and not force and Path(self._adb_path).exists():
-            return self._adb_path
+        """Найти adb.exe.
+
+        Порядок: сначала путь, указанный пользователем (принимаем и папку, и
+        путь в кавычках), затем автопоиск. ``force`` означает «перепроверить
+        автопоиск», а НЕ «забыть указанный путь» — иначе указанный вручную
+        рабочий adb игнорировался, и SparkTech сообщал об ошибке.
+        """
+        if self._adb_path:
+            for candidate in (self._adb_path, self.normalize_user_path(self._adb_path)):
+                try:
+                    if candidate and Path(candidate).is_file():
+                        self._adb_path = candidate
+                        return candidate
+                except OSError:
+                    continue
         for candidate in self.candidate_paths():
             try:
                 if candidate.is_file():
@@ -155,8 +168,77 @@ class AdbClient:
             f"Скачайте его с {ADB_DOWNLOAD_URL} и укажите путь в настройках SparkTech."
         )
 
+    @staticmethod
+    def normalize_user_path(raw: str) -> str:
+        """Привести введённый пользователем путь к исполняемому файлу adb.
+
+        Пользователи (и это нормально) вставляют:
+          * папку ``C:\\platform-tools`` вместо ``adb.exe``;
+          * путь в кавычках из проводника: ``"C:\\Program Files\\adb.exe"``;
+          * путь с ``%LOCALAPPDATA%``;
+          * путь к папке Android SDK (``...\\Sdk``).
+
+        Возвращает путь к ``adb.exe``/``adb``, если его удалось найти, иначе
+        исходную строку (решение о корректности примет resolve()).
+        """
+        text = (raw or "").strip()
+        if not text:
+            return ""
+        # кавычки могут быть с обеих сторон (копия пути из проводника)
+        text = text.strip().strip('"').strip("'").strip()
+        text = os.path.expandvars(text)
+        text = os.path.expanduser(text)
+        if not text:
+            return ""
+
+        candidates: list[Path] = []
+        path = Path(text)
+        names = ["adb.exe", "adb"] if os.name == "nt" else ["adb"]
+
+        if path.is_dir():
+            # папка platform-tools, её родитель, каталог SDK или даже весь SDK
+            for base in (path, path / "platform-tools", path / "platform-tools" / "platform-tools",
+                         path.parent, path.parent / "platform-tools"):
+                for name in names:
+                    candidates.append(base / name)
+        else:
+            # Введён путь к файлу (или он ещё не существует). Проверяем только
+            # его самого и вариант с расширением .exe — НЕ соседние каталоги:
+            # иначе при опечатке подхватывался посторонний adb рядом (например,
+            # из другой папки platform-tools), и ошибку было не увидеть.
+            candidates.append(path)
+            if os.name == "nt" and path.suffix.lower() != ".exe":
+                candidates.append(path.with_suffix(".exe"))
+
+        for candidate in candidates:
+            try:
+                if candidate.is_file():
+                    return str(candidate)
+            except OSError:
+                continue
+        return text
+
     def set_path(self, path: str) -> None:
-        self._adb_path = path.strip() or None
+        """Запомнить путь к adb.
+
+        Если по указанному пути файла нет, настройка НЕ применяется: иначе
+        сохранённый «плохой» путь перекрывал бы автоматический поиск, и
+        SparkTech сообщал бы об ошибке, хотя рабочий adb лежит рядом с exe.
+        """
+        # Снимаем кавычки и переменные окружения ДО разбора: путь часто
+        # копируют из «Свойств» проводника как "C:\platform-tools".
+        raw = self.normalize_user_path(path or "") or (path or "").strip().strip('"\'').strip()
+        if not raw:
+            self._adb_path = None
+            self._server_checked = False
+            return
+        normalized = self.normalize_user_path(raw)
+        try:
+            is_file = Path(normalized).is_file()
+        except OSError:
+            is_file = False
+        if is_file:
+            self._adb_path = normalized
         self._server_checked = False
 
     @property
@@ -225,14 +307,51 @@ class AdbClient:
         return res
 
     def version(self) -> str | None:
+        return self.version_diagnostics()[0]
+
+    def version_diagnostics(self) -> tuple[str | None, str | None]:
+        """Версия adb и, если запустить не удалось, — настоящая причина.
+
+        Раньше любая ошибка запуска превращалась в «версия не определена», и
+        интерфейс показывал догадку про «повреждённый файл». Теперь видно, что
+        именно произошло: файл не найден, нет прав на запуск, папка вместо
+        файла, тайм-аут, неизвестный вывод и т. д.
+        """
         try:
+            path = self.adb_path
+            if os.name != "nt" and os.path.isfile(path) and not os.access(path, os.X_OK):
+                return None, (
+                    f"Файл найден, но не имеет прав на запуск: {path}. "
+                    "Проверьте права доступа к platform-tools."
+                )
             res = self.run(["version"], timeout=15)
-        except (CommandError, OSError):
-            return None
-        if not res.ok:
-            return None
-        m = re.search(r"Android Debug Bridge version ([\d.]+)", res.stdout)
-        return m.group(1) if m else (res.stdout.splitlines() or [""])[0].strip()
+        except CommandTimeout:
+            return None, (
+                f"adb не ответил на запрос версии за 15 секунд: {self.adb_path}. "
+                "Обычно это значит, что файл блокируется антивирусом или это не adb.exe."
+            )
+        except CommandError as exc:
+            return None, f"Не удалось запустить {self.adb_path}: {exc}"
+        except OSError as exc:
+            return None, f"Ошибка запуска {self.adb_path}: {exc}"
+
+        output = (res.stdout or "") + "\n" + (res.stderr or "")
+        m = re.search(r"Android Debug Bridge version ([\d.]+)", output)
+        if m:
+            return m.group(1), None
+
+        # Запустилось, но это не adb: показываем начало вывода — так видно,
+        # например, «This app can't run on your PC» или ошибку DLL.
+        snippet = " ".join(output.split())[:200]
+        if res.returncode != 0:
+            return None, (
+                f"Программа запустилась, но вернула код {res.returncode} и не похожа на adb. "
+                f"Вывод: {snippet or 'пусто'}"
+            )
+        return None, (
+            "Программа запустилась, но не сообщила версию adb. "
+            f"Вывод: {snippet or 'пусто'} — проверьте, что это официальный adb.exe."
+        )
 
     def start_server(self) -> None:
         """Запустить adb-сервер (он нужен для любых операций)."""
