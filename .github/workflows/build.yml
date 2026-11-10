@@ -54,8 +54,12 @@ jobs:
       - name: Сборка
         shell: bash
         run: |
+          # GitHub запускает шаг с `bash -e`: без set +e оболочка выйдет на
+          # неудачной команде и мы не покажем причину.
+          set +e
           python -m PyInstaller SparkTech.spec --noconfirm --clean > build.log 2>&1
           status=$?
+          set -e
           if [ ! -f dist/SparkTech.exe ]; then
             # Аннотации ограничены по длине и количеству, поэтому публикуем
             # только суть: строки с ошибкой и последние строки лога.
