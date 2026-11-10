@@ -226,17 +226,31 @@ def test_download_rejects_paths_outside_scan(server):
     assert exc.value.code == 400
 
 
-def test_reveal_creates_download_folder_and_reports_honestly(server):
-    """Папка создаётся всегда; «открылось ли» сообщается как есть.
+def test_reveal_creates_download_folder(server, monkeypatch):
+    """Папка создаётся всегда, а запуск проводника не важен для теста.
 
-    В тестовой среде нет xdg-open/проводника, поэтому ok=False с понятной
-    причиной — это правильный честный ответ, а не сломанная функция.
+    Сам запуск системной программы подменяется: иначе результат зависел бы от
+    того, есть ли в системе xdg-open (в CI он есть, в песочнице — нет).
     """
     app, adb, base = server
+    monkeypatch.setattr("sparktech.web.server.open_folder", lambda path: _Ok())
     payload = post(app, base, "/api/reveal", {})
+    assert payload["ok"] is True
     assert Path(payload["folder"]).is_dir()
+
+
+def test_reveal_reports_when_system_opener_missing(server, monkeypatch):
+    """Если открыть нечем — честная причина, а не «всё хорошо»."""
+    app, adb, base = server
+    monkeypatch.setattr(
+        "sparktech.web.server.open_folder",
+        lambda path: _Bad("В системе нет xdg-open: откройте папку вручную."),
+    )
+    payload = post(app, base, "/api/reveal", {})
     assert payload["ok"] is False
-    assert payload["error"]
+    assert "xdg-open" in payload["error"]
+    # Папка при этом всё равно существует — файлы пользователь найдёт.
+    assert Path(payload["folder"]).is_dir()
 
 
 def test_reveal_refuses_path_outside_download_folder(server):
@@ -286,6 +300,12 @@ def test_open_remote_copies_and_calls_system_opener(server, monkeypatch):
 class _Ok:
     ok = True
     message = ""
+
+
+class _Bad:
+    def __init__(self, message: str):
+        self.ok = False
+        self.message = message
 
 
 def test_open_remote_rejects_file_outside_scan(server):
