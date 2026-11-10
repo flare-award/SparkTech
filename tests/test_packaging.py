@@ -39,6 +39,24 @@ def test_spec_is_valid_python_and_targets_entrypoint():
     assert "console=False" in text  # GUI без консольного окна
 
 
+def test_spec_output_is_encoding_safe():
+    """Сборка на русской Windows падала с UnicodeEncodeError при печати
+    кириллицы в консоль cp1252/cp866 — весь вывод spec должен быть безопасным."""
+    text = SPEC.read_text(encoding="utf-8")
+    assert "def note(message" in text
+    assert 'errors="replace"' in text
+    # ни одного «голого» print с русским текстом
+    import re
+
+    bare = re.findall(
+        r"^\s*print\(\s*[\"'][^\"']*[\u0410-\u044f]",
+        text,
+        flags=re.MULTILINE,
+    )
+    assert not bare, f"print с кириллицей вне note(): {bare}"
+    assert "note(" in text
+
+
 def test_spec_includes_static_assets():
     text = SPEC.read_text(encoding="utf-8")
     assert '"sparktech/web/static"' in text
@@ -73,6 +91,7 @@ def test_build_scripts_setup_python_encoding():
     ps1 = (ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8-sig")
     bat = (ROOT / "scripts" / "build_windows.bat").read_text(encoding="utf-8")
     assert "Console]::OutputEncoding" in ps1
+    assert "$env:PYTHONUTF8" in ps1
     assert "chcp 65001" in bat
     # .bat в UTF-8 без BOM, но без кириллицы в исполняемых строках
     assert "Сборка SparkTech" in bat

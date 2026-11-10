@@ -14,9 +14,27 @@ vendor/platform-tools перед сборкой. Скрипт scripts/build_wind
 делает это, если каталог существует, и предупреждает, если нет.
 """
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
+
+# Консоль Windows (особенно русская локаль) может быть в cp1252/cp866, и print
+# с кириллицей убивает сборку: UnicodeEncodeError. Переключаем вывод на UTF-8
+# с заменой символов, а если и это невозможно — печатаем только ASCII.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # pragma: no cover — старые интерпретаторы/перенаправление
+    pass
+
+
+def note(message: str) -> None:
+    """Сообщение сборщику, безопасное для любой кодировки консоли."""
+    try:
+        print(message)
+    except (UnicodeEncodeError, UnicodeError):
+        print(message.encode("ascii", "replace").decode("ascii"))
 
 ROOT = Path(SPECPATH).resolve()  # noqa: F821 — задаётся PyInstaller
 VENDOR = ROOT / "vendor" / "platform-tools"
@@ -32,9 +50,9 @@ if VENDOR.is_dir():
             if item.is_file():
                 binaries.append((str(item), "vendor/platform-tools"))
     else:
-        print("[SparkTech] ВНИМАНИЕ: vendor/platform-tools есть, но adb.exe не найден.")
+        note("[SparkTech] ВНИМАНИЕ: vendor/platform-tools есть, но adb.exe не найден.")
 else:
-    print(
+    note(
         "[SparkTech] vendor/platform-tools не найден: .exe соберётся без adb.\n"
         "            Пользователь укажет путь к официальным Platform-Tools в настройках."
     )
@@ -45,7 +63,7 @@ try:
 
     hiddenimports += ["webview", "webview.platforms.edgechromium", "clr_loader"]
 except Exception:  # pywebview необязателен
-    print("[SparkTech] pywebview не установлен: сборка без нативного окна (интерфейс в браузере).")
+    note("[SparkTech] pywebview не установлен: сборка без нативного окна (интерфейс в браузере).")
 
 hiddenimports += collect_submodules("sparktech")
 

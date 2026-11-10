@@ -36,6 +36,11 @@ try {
     $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch { }
 
+# PyInstaller и Python пишут кириллицу: без UTF-8 сборка падает с
+# UnicodeEncodeError на консоли с кодовой страницей cp866/cp1251.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
 

@@ -39,6 +39,11 @@ jobs:
     name: Сборка SparkTech.exe
     runs-on: windows-latest
     needs: test
+    env:
+      # Консоль Windows не в UTF-8: без этого вывод PyInstaller/нашего spec
+      # с кириллицей падает с UnicodeEncodeError.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
