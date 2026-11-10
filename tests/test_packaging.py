@@ -164,7 +164,8 @@ def test_entrypoint_wrapper_uses_absolute_import():
 
     out = subprocess.run(
         [_sys.executable, str(ROOT / "run_sparktech.py"), "--version"],
-        capture_output=True, text=True, cwd=str(ROOT), timeout=60,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(ROOT), timeout=60,
     )
     assert out.returncode == 0, out.stderr
     assert "1.0.0" in out.stdout
@@ -219,7 +220,8 @@ def app_import_closure() -> set[str]:
     )
     out = subprocess.run(
         [_sys.executable, "-c", code],
-        capture_output=True, text=True, cwd=str(ROOT), timeout=120,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(ROOT), timeout=120,
     )
     assert out.returncode == 0, out.stderr
     import json as _json
@@ -279,7 +281,7 @@ def test_frozen_failure_is_diagnosable():
         )
         proc = subprocess.run(
             [_sys.executable, "-c", code], capture_output=True, text=True,
-            cwd=str(ROOT), env=env, timeout=120,
+            encoding="utf-8", errors="replace", cwd=str(ROOT), env=env, timeout=120,
         )
         assert proc.returncode == 1, proc.stderr
         crash = (Path(tmp) / "sparktech" / "crash.log")
@@ -304,7 +306,7 @@ def test_cyrillic_console_does_not_crash_startup():
     for entry in (["run_sparktech.py"], ["-m", "sparktech"]):
         proc = subprocess.run(
             [_sys.executable, *entry, "--version"],
-            capture_output=True, text=True, cwd=str(ROOT), env=env, timeout=120,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(ROOT), env=env, timeout=120,
         )
         assert proc.returncode == 0, f"{entry}: {proc.stderr[-500:]}"
         assert "1.0.0" in proc.stdout
@@ -324,7 +326,7 @@ def test_cyrillic_console_does_not_crash_startup():
     )
     proc = subprocess.run(
         [_sys.executable, "-c", code], capture_output=True, text=True,
-        cwd=str(ROOT), timeout=120,
+        encoding="utf-8", errors="replace", cwd=str(ROOT), timeout=120,
     )
     assert proc.returncode == 0, proc.stderr[-500:]
 
@@ -345,7 +347,19 @@ def test_cyrillic_console_does_not_crash_startup():
         ) % tmp
         proc = subprocess.run(
             [_sys.executable, "-c", code], capture_output=True, text=True,
-            cwd=str(ROOT), timeout=120,
+            encoding="utf-8", errors="replace", cwd=str(ROOT), timeout=120,
         )
         assert proc.returncode == 0, proc.stderr[-500:]
         assert "200" in proc.stdout
+
+
+def test_subprocess_calls_in_tests_are_encoding_safe():
+    """На Windows чтение вывода дочернего процесса по умолчанию идёт в cp1252
+    и падает на кириллице (UnicodeDecodeError при text=True)."""
+    offenders = []
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for chunk in re.findall(r"subprocess\.run\((?:[^()]|\([^()]*\))*\)", source, re.S):
+            if "text=True" in chunk and "encoding=" not in chunk:
+                offenders.append(path.name)
+    assert not offenders, f"subprocess без encoding= в UTF-8: {sorted(set(offenders))}"

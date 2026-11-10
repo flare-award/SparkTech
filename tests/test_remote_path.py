@@ -57,7 +57,7 @@ def test_shell_roundtrip_returns_exact_path(path):
 
     out = subprocess.run(
         ["sh", "-c", f"printf %s {quote_remote_path(path)}"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     ).stdout
     assert out == path
 
