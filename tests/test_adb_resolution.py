@@ -92,20 +92,54 @@ def test_version_reports_real_permission_error(tmp_path):
     assert "прав" in (problem or "").lower() or "не удалось" in (problem or "").lower()
 
 
-def test_version_reports_output_of_wrong_program(tmp_path):
-    """Запускается, но это не adb — показываем реальный вывод."""
-    fake = make_script(tmp_path / "adb", "#!/bin/sh\necho 'This app cannot run on your PC' >&2\nexit 1\n")
-    version, problem = AdbClient(str(fake)).version_diagnostics()
+class FakeRunner:
+    """Подставной клиент: возвращает заданный вывод, ничего не запуская.
+
+    Формулировки ошибок — это тоже код, который надо проверять, но shell-скрипт
+    из теста не запустится на Windows (WinError 193), поэтому логику разбора
+    проверяем здесь, а реальный запуск — в POSIX-тестах выше и ниже.
+    """
+
+    adb_path = "/fake/platform-tools/adb"
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def run(self, args, **kwargs):
+        from sparktech.core.process import CommandResult
+
+        return CommandResult(
+            argv=["adb", *args], returncode=self.returncode,
+            stdout=self.stdout, stderr=self.stderr,
+        )
+
+
+def test_version_reports_output_of_wrong_program():
+    """Запускается, но это не adb — показываем реальный вывод и код возврата."""
+    runner = FakeRunner(returncode=1, stderr="This app cannot run on your PC")
+    version, problem = AdbClient.version_diagnostics(runner)
     assert version is None
     assert "This app cannot run" in problem
     assert "код 1" in problem
 
 
-def test_version_reports_empty_output(tmp_path):
-    fake = make_script(tmp_path / "adb", "#!/bin/sh\nexit 0\n")
-    version, problem = AdbClient(str(fake)).version_diagnostics()
+def test_version_reports_empty_output():
+    version, problem = AdbClient.version_diagnostics(FakeRunner(returncode=0))
     assert version is None
     assert "не сообщила версию" in problem
+
+
+@pytest.mark.skipif(os.name == "nt", reason="нужен POSIX-shell")
+def test_version_reports_interpreter_error_from_real_launch(tmp_path):
+    """Настоящий запуск не-исполняемого файла: причина, а не догадка."""
+    if os.name == "nt":
+        pytest.skip("POSIX")
+    plain = tmp_path / "adb"
+    plain.write_text("не программа", encoding="utf-8")
+    version, problem = AdbClient.version_diagnostics(AdbClient(str(plain)))
+    if version is not None:
+        pytest.skip("файл случайно оказался исполняемым")
+    assert problem and "adb" in problem.lower()
 
 
 def test_version_parses_official_output():
