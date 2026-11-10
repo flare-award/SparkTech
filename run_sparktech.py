@@ -15,6 +15,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# Кодировка консоли (см. _safe_console ниже) настраивается до импорта пакета,
+# чтобы ни одно сообщение при старте не упало с UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Если запускаем из клона, каталог репозитория должен быть в sys.path.
 _REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:

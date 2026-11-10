@@ -286,3 +286,66 @@ def test_frozen_failure_is_diagnosable():
         assert crash.is_file(), f"нет crash.log, stderr={proc.stderr[:400]}"
         text = crash.read_text(encoding="utf-8")
         assert "RuntimeError" in text and "тестовая ошибка запуска" in text
+
+
+def test_cyrillic_console_does_not_crash_startup():
+    """Собранный .exe падал на старте с UnicodeEncodeError на консоли cp1252.
+
+    Русские сообщения при запуске (и диагностика) не должны ломать приложение
+    ни при какой кодировке консоли.
+    """
+    import os
+    import subprocess
+    import sys as _sys
+    import tempfile
+
+    # 1. консоль в cp1252: приложение должно нормально ответить на --version
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    for entry in (["run_sparktech.py"], ["-m", "sparktech"]):
+        proc = subprocess.run(
+            [_sys.executable, *entry, "--version"],
+            capture_output=True, text=True, cwd=str(ROOT), env=env, timeout=120,
+        )
+        assert proc.returncode == 0, f"{entry}: {proc.stderr[-500:]}"
+        assert "1.0.0" in proc.stdout
+
+    # 2. худший случай: поток вообще не умеет писать кириллицу
+    code = (
+        "import io, sys\n"
+        "class Bad(io.TextIOBase):\n"
+        "    encoding = 'cp1252'\n"
+        "    def write(self, s):\n"
+        "        s.encode('cp1252'); return len(s)\n"
+        "    def flush(self): pass\n"
+        "sys.stdout = Bad(); sys.stderr = Bad()\n"
+        "import sparktech.__main__ as m\n"
+        "m.say('Сообщение с кириллицей — тире и «кавычки»')\n"
+        "print('OK')\n"
+    )
+    proc = subprocess.run(
+        [_sys.executable, "-c", code], capture_output=True, text=True,
+        cwd=str(ROOT), timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-500:]
+
+    # 3. рабочая директория: запуск сервера не должен падать из-за печати
+    with tempfile.TemporaryDirectory() as tmp:
+        code = (
+            "import sys, threading, time, json, urllib.request\n"
+            "import sparktech.__main__ as m\n"
+            "from sparktech.web.server import AppContext, create_server\n"
+            "app = AppContext(store=__import__('sparktech.core.store', fromlist=['Store']).Store(%r))\n"
+            "srv = create_server(app)\n"
+            "threading.Thread(target=srv.serve_forever, daemon=True).start()\n"
+            "m.say('Сервер запущен — кириллица в консоли')\n"
+            "port = srv.server_address[1]\n"
+            "with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/health', timeout=10) as r:\n"
+            "    print(r.status)\n"
+            "srv.shutdown()\n"
+        ) % tmp
+        proc = subprocess.run(
+            [_sys.executable, "-c", code], capture_output=True, text=True,
+            cwd=str(ROOT), timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr[-500:]
+        assert "200" in proc.stdout

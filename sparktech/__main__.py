@@ -23,6 +23,32 @@ from . import APP_NAME, __version__
 from .core.store import Store
 from .web.server import AppContext, create_server
 
+# Кодировка консоли настраивается сразу при импорте: до этого места любые
+# сообщения (в том числе из других модулей) могли упасть на cp1252.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def say(message: str) -> None:
+    """Напечатать сообщение так, чтобы кодировка консоли не роняла приложение.
+
+    Собранный .exe — оконное приложение, консоли может не быть вовсе; на
+    русской Windows консоль бывает в cp866/cp1252. Любая из этих ситуаций
+    не должна прерывать запуск.
+    """
+    try:
+        print(message)
+    except (UnicodeEncodeError, UnicodeError):
+        try:
+            print(message.encode("ascii", "replace").decode("ascii"))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 def _state_dir() -> Path:
     """Каталог для журналов запуска и аварийных сообщений."""
@@ -150,8 +176,8 @@ def _main(argv: list[str] | None = None) -> int:
         "startup.log",
         f"{APP_NAME} {__version__}\nport={port}\nurl={url}\npid={os.getpid()}\nfrozen={getattr(sys, 'frozen', False)}\n",
     )
-    print(f"{APP_NAME} {__version__} — локальный интерфейс: {url}")
-    print("Сервер доступен только с этого компьютера (127.0.0.1).")
+    say(f"{APP_NAME} {__version__} — локальный интерфейс: {url}")
+    say("Сервер доступен только с этого компьютера (127.0.0.1).")
 
     use_window = not args.browser and not args.no_window
     launcher = _build_window(url, app) if use_window else None
@@ -166,12 +192,12 @@ def _main(argv: list[str] | None = None) -> int:
         try:
             launcher()  # блокирует до закрытия окна
         except Exception as exc:  # pywebview может не найти WebView2 Runtime
-            print(f"Не удалось открыть нативное окно ({exc}). Открываю браузер.")
+            say(f"Не удалось открыть нативное окно ({exc}). Открываю браузер.")
             webbrowser.open(url)
             _wait_for_shutdown(app)
     else:
         if use_window:
-            print(
+            say(
                 "Компонент нативного окна (pywebview/WebView2) недоступен — интерфейс открыт в браузере. "
                 "Установите requirements-desktop.txt для окна приложения."
             )
