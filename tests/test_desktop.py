@@ -190,8 +190,15 @@ def test_result_serialises_for_api():
 
 
 def test_open_uses_no_shell_and_survives_quotes(monkeypatch, tmp_path):
-    """Имя файла с пробелами и кавычками не должно попадать в shell."""
-    target = tmp_path / 'clip "с кавычками" & rm -rf.txt'
+    """Странное имя файла не должно попадать в shell как команда."""
+    # Двойная кавычка в имени файла в Windows невозможна, поэтому там
+    # проверяем пробелы, кириллицу и символы оболочки.
+    name = (
+        "clip & rm -rf; $(reboot) файл.txt"
+        if desktop.is_windows()
+        else 'clip "с кавычками" & rm -rf.txt'
+    )
+    target = tmp_path / name
     target.write_bytes(b"x")
     run = FakeRun()
     monkeypatch.setattr(desktop, "is_windows", lambda: False)
