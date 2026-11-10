@@ -178,9 +178,21 @@ def test_real_optimizer_confirms_settings(client, phone):
     assert undo.status == "success"
 
 
-def test_unavailable_adb_path_reports_clearly():
-    client = AdbClient("/nonexistent/adb-binary")
+def test_unavailable_adb_path_reports_clearly(monkeypatch, tmp_path):
+    """Если adb не найден нигде, AdbClient обязан сообщить об этом явно.
+
+    Тест не должен зависеть от окружения: на CI-раннерах adb может быть
+    предустановлен (Android SDK), поэтому поиск в PATH и стандартных местах
+    отключаем явно.
+    """
+    from sparktech.core.adb import AdbClient as Client
     from sparktech.core.adb import AdbNotFound
 
-    with pytest.raises(AdbNotFound):
+    monkeypatch.delenv("SPARKTECH_ADB", raising=False)
+    monkeypatch.setattr("sparktech.core.process.which", lambda name: None)
+    monkeypatch.setattr(Client, "candidate_paths", staticmethod(lambda: []))
+
+    client = Client(str(tmp_path / "absent" / "adb"))
+    with pytest.raises(AdbNotFound) as exc:
         client.resolve(force=True)
+    assert "adb не найден" in str(exc.value)
