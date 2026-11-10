@@ -77,5 +77,5 @@ exe = EXE(  # noqa: F821
     console=False,          # GUI-приложение без чёрного окна консоли
     disable_windowed_traceback=False,
     icon=None,
-    version=str(ROOT / "build" / "version_info.txt") if (ROOT / "build" / "version_info.txt").exists() else None,
+    version=str(ROOT / "packaging" / "version_info.txt") if (ROOT / "packaging" / "version_info.txt").exists() else None,
 )

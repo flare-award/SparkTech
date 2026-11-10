@@ -9,8 +9,20 @@ from __future__ import annotations
 
 import ast
 import re
-import tomllib
 from pathlib import Path
+
+import pytest
+
+# tomllib появился только в Python 3.11. Матрица CI включает 3.10, поэтому
+# используем его, если он есть, иначе — tomli, а при отсутствии обоих тест
+# разбора pyproject пропускается (остальные проверки упаковки выполняются).
+try:  # pragma: no cover — зависит от версии Python
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "SparkTech.spec"
@@ -41,6 +53,29 @@ def test_static_dir_resolves_from_sources():
     assert (STATIC_DIR / "styles.css").is_file()
 
 
+def test_version_info_is_in_repository():
+    """Файл метаданных версии не должен лежать в gitignored build/."""
+    version_file = ROOT / "packaging" / "version_info.txt"
+    assert version_file.is_file()
+    text = version_file.read_text(encoding="utf-8")
+    assert "VSVersionInfo" in text and "SparkTech" in text
+    spec = SPEC.read_text(encoding="utf-8")
+    assert 'packaging" / "version_info.txt"' in spec
+    # build/ целиком игнорируется, поэтому файл там бы не попал в репозиторий
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "build/" in ignore
+
+
+def test_build_scripts_setup_python_encoding():
+    """Скрипты сборки содержат кириллицу: на Windows консоль не должна падать."""
+    ps1 = (ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8-sig")
+    bat = (ROOT / "scripts" / "build_windows.bat").read_text(encoding="utf-8")
+    assert "Console]::OutputEncoding" in ps1
+    assert "chcp 65001" in bat
+    # .bat в UTF-8 без BOM, но без кириллицы в исполняемых строках
+    assert "Сборка SparkTech" in bat
+
+
 def test_build_scripts_exist_and_mention_license():
     ps1 = (ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
     bat = (ROOT / "scripts" / "build_windows.bat").read_text(encoding="utf-8")
@@ -67,6 +102,8 @@ def test_ci_builds_windows_exe():
 
 
 def test_pyproject_packages_static():
+    if tomllib is None:  # pragma: no cover — Python 3.10 без tomli
+        pytest.skip("нет tomllib/tomli для разбора pyproject.toml")
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["project"]["name"] == "sparktech"
     assert data["project"]["requires-python"].startswith(">=3.10")

@@ -44,8 +44,16 @@ def test_quote_blocks_shell_injection(path):
     ],
 )
 def test_shell_roundtrip_returns_exact_path(path):
-    """Проверяем на настоящей /bin/sh, что кавычки дают ровно исходный путь."""
+    """Проверяем на настоящей POSIX-оболочке, что кавычки дают ровно исходный путь.
+
+    На Windows нет /bin/sh, а синтаксис кавычек идентичен поведению sh на
+    Android — там проверка выполняется в CI на Linux.
+    """
+    import os
     import subprocess
+
+    if os.name == "nt":
+        pytest.skip("нужен POSIX sh; путь проверяется на Linux в CI")
 
     out = subprocess.run(
         ["sh", "-c", f"printf %s {quote_remote_path(path)}"],
