@@ -89,10 +89,15 @@ jobs:
       - name: Smoke-тест собранного exe
         shell: pwsh
         run: |
+          # Прокси раннера не должен перехватывать запрос к localhost.
+          $env:NO_PROXY = "127.0.0.1,localhost"
+          $env:no_proxy = "127.0.0.1,localhost"
+          $stateDir = Join-Path $env:LOCALAPPDATA "SparkTech"
+          Remove-Item -Force (Join-Path $stateDir "startup.log"), (Join-Path $stateDir "crash.log") -ErrorAction SilentlyContinue
+
           $exe = (Resolve-Path "dist/SparkTech.exe").Path
           $proc = Start-Process -FilePath $exe -ArgumentList "--no-window", "--port", "8123" -PassThru -NoNewWindow
           $ok = $false
-          $errorText = ""
           try {
             for ($i = 0; $i -lt 60; $i++) {
               Start-Sleep -Milliseconds 500
@@ -102,15 +107,21 @@ jobs:
                 if ($resp.StatusCode -eq 200 -and $resp.Content -match "SparkTech") { $ok = $true; break }
               } catch { }
             }
+            if (-not $ok) {
+              # startup.log пишет само приложение, crash.log — при фатальной ошибке:
+              # у оконного .exe нет консоли, иначе причину не увидеть.
+              $startup = if (Test-Path (Join-Path $stateDir "startup.log")) { Get-Content (Join-Path $stateDir "startup.log") -Raw } else { "startup.log отсутствует" }
+              $crash = if (Test-Path (Join-Path $stateDir "crash.log")) { Get-Content (Join-Path $stateDir "crash.log") -Raw } else { "crash.log отсутствует" }
+              $tail = (("startup: " + $startup + " | crash: " + $crash) -replace "`r?`n", "~" -replace "%", "%25")
+              if ($tail.Length -gt 1200) { $tail = $tail.Substring(0, 1200) }
+              Write-Output "::error title=exe-smoke::exit=$($proc.ExitCode) $tail"
+              exit 1
+            }
+            Write-Output "exe запустился и ответил на /api/health"
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
-          if (-not $ok) {
-            $errorText = "exe не поднял локальный сервер (код выхода: $($proc.ExitCode))"
-            Write-Output "::error title=exe-smoke::$errorText"
-            exit 1
-          }
-          Write-Output "exe запустился и ответил на /api/health"
+
       - uses: actions/upload-artifact@v4
         with:
           name: SparkTech-windows-exe

@@ -9,15 +9,53 @@ pywebview недоступен, в браузере по умолчанию. П�
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 import threading
 import time
+import traceback
 import webbrowser
+
+from pathlib import Path
 
 from . import APP_NAME, __version__
 from .core.store import Store
 from .web.server import AppContext, create_server
+
+
+def _state_dir() -> Path:
+    """Каталог для журналов запуска и аварийных сообщений."""
+    from .core.store import app_data_dir
+
+    path = app_data_dir()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        path = Path(os.environ.get("TEMP", ".")) / "SparkTech"
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_diagnostic(name: str, text: str) -> None:
+    """Записать диагностический файл (не содержит пользовательских данных).
+
+    Нужно потому, что собранный .exe — оконное приложение без консоли:
+    без такого файла ошибка запуска остаётся невидимой.
+    """
+    try:
+        (_state_dir() / name).write_text(text, encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
+
+def _report_fatal(exc: BaseException) -> None:
+    text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    _write_diagnostic("crash.log", f"{APP_NAME} {__version__}\n{text}")
+    try:
+        print(text, file=sys.stderr)
+    except Exception:
+        pass
 
 
 def _find_free_port(preferred: int | None = None) -> int:
@@ -60,6 +98,16 @@ def _build_window(url: str, app: AppContext):
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 — диагностика важнее трассировки
+        _report_fatal(exc)
+        return 1
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="sparktech",
         description="SparkTech — анализ хранилища и безопасная оптимизация Android через официальный ADB.",
@@ -96,6 +144,12 @@ def main(argv: list[str] | None = None) -> int:
     server_thread.start()
 
     store.log("start", version=__version__, port=port)
+    # Файл запуска: позволяет проверить работоспособность извне (CI, поддержка),
+    # не полагаясь на вывод консоли, которой у оконного .exe нет.
+    _write_diagnostic(
+        "startup.log",
+        f"{APP_NAME} {__version__}\nport={port}\nurl={url}\npid={os.getpid()}\nfrozen={getattr(sys, 'frozen', False)}\n",
+    )
     print(f"{APP_NAME} {__version__} — локальный интерфейс: {url}")
     print("Сервер доступен только с этого компьютера (127.0.0.1).")
 

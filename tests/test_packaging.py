@@ -249,3 +249,40 @@ def test_spec_excludes_only_safe_modules():
         f"подозрительные исключения в spec: {extra}. Исключать можно только модули, "
         "не нужные приложению и его зависимостям."
     )
+
+
+def test_frozen_failure_is_diagnosable():
+    """У оконного .exe нет консоли: ошибка запуска должна попадать в файл.
+
+    Иначе пользователь (и CI) видит только «ничего не произошло».
+    """
+    main_module = (ROOT / "sparktech" / "__main__.py").read_text(encoding="utf-8")
+    assert "_write_diagnostic" in main_module
+    assert "crash.log" in main_module       # фатальная ошибка
+    assert "startup.log" in main_module     # успешный старт + порт
+    assert "traceback.format_exception" in main_module
+
+    # реальная проверка: фатальная ошибка пишется в файл и не роняет процесс
+    import subprocess
+    import sys as _sys
+    import tempfile
+    import os as _os
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(_os.environ, XDG_STATE_HOME=tmp, LOCALAPPDATA=tmp)
+        code = (
+            "import sparktech.__main__ as m\n"
+            "def boom(*a, **k):\n"
+            "    raise RuntimeError('тестовая ошибка запуска')\n"
+            "m.AppContext = boom\n"
+            "raise SystemExit(m.main(['--no-window']))\n"
+        )
+        proc = subprocess.run(
+            [_sys.executable, "-c", code], capture_output=True, text=True,
+            cwd=str(ROOT), env=env, timeout=120,
+        )
+        assert proc.returncode == 1, proc.stderr
+        crash = (Path(tmp) / "sparktech" / "crash.log")
+        assert crash.is_file(), f"нет crash.log, stderr={proc.stderr[:400]}"
+        text = crash.read_text(encoding="utf-8")
+        assert "RuntimeError" in text and "тестовая ошибка запуска" in text
