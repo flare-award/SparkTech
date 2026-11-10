@@ -363,3 +363,22 @@ def test_subprocess_calls_in_tests_are_encoding_safe():
             if "text=True" in chunk and "encoding=" not in chunk:
                 offenders.append(path.name)
     assert not offenders, f"subprocess без encoding= в UTF-8: {sorted(set(offenders))}"
+
+
+def test_icon_assets_exist_and_are_packaged():
+    """icons.js должен существовать и попасть в сборку вместе со static/.
+
+    Иконки лежат в каталоге static (он целиком кладётся в exe), поэтому
+    отдельная запись в spec не нужна — но проверить это нужно, иначе после
+    сборки интерфейс останется без иконок.
+    """
+    static = Path(__file__).resolve().parents[1] / "sparktech" / "web" / "static"
+    assert (static / "icons.js").is_file()
+    assert (static / "icons-LICENSE.txt").is_file()
+    assert "static" in (static / "index.html").read_text(encoding="utf-8")
+
+
+def test_spec_bundles_whole_static_directory():
+    spec = (Path(__file__).resolve().parents[1] / "SparkTech.spec").read_text(encoding="utf-8")
+    # Каталог, а не отдельные файлы: новый icons.js не требует правки spec.
+    assert '"sparktech" / "web" / "static"' in spec
