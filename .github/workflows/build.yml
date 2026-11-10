@@ -54,15 +54,19 @@ jobs:
       - name: Сборка
         shell: bash
         run: |
-          # хвост вывода публикуется аннотациями — так причина видна без логов
-          python -m PyInstaller SparkTech.spec --noconfirm --clean 2>&1 | tee build.log || true
-          status=$(grep -c "^ERROR" build.log || true)
+          python -m PyInstaller SparkTech.spec --noconfirm --clean > build.log 2>&1
+          status=$?
           if [ ! -f dist/SparkTech.exe ]; then
-            tail -n 25 build.log | sed -e 's/%/%25/g' -e 's/\r//g' |
-              while IFS= read -r line; do echo "::error title=pyinstaller::${line}"; done
+            # Аннотации ограничены по длине и количеству, поэтому публикуем
+            # только суть: строки с ошибкой и последние строки лога.
+            errs=$(grep -E "(Error|Exception|error):" build.log | tail -n 4 | tr -d '\r' | tr '\n' '~' | sed 's/%/%25/g')
+            tailtxt=$(tail -n 4 build.log | tr -d '\r' | tr '\n' '~' | sed 's/%/%25/g')
+            echo "::error title=pyinstaller-status::exit=$status ${errs}"
+            echo "::error title=pyinstaller-tail::${tailtxt}"
             exit 1
           fi
           tail -n 3 build.log
+
       - name: Проверка, что exe создан
         shell: pwsh
         run: |
