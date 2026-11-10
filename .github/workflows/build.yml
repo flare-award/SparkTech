@@ -1,0 +1,57 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Тесты (Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Тесты
+        run: python -m pytest -q
+
+  windows-exe:
+    name: Сборка SparkTech.exe
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt pyinstaller pywebview
+      # Официальный adb намеренно не скачивается в CI: лицензию Google нужно
+      # принимать осознанно. Сборка без adb — рабочее состояние, путь задаётся
+      # в настройках приложения.
+      - name: Сборка
+        run: python -m PyInstaller SparkTech.spec --noconfirm --clean
+      - name: Проверка, что exe создан
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/SparkTech.exe")) { throw "SparkTech.exe не создан" }
+          Get-Item dist/SparkTech.exe | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SparkTech-windows-exe
+          path: dist/SparkTech.exe
+          if-no-files-found: error

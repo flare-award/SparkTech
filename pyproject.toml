@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparktech"
+version = "1.0.0"
+description = "SparkTech — честный анализ хранилища и безопасная оптимизация Android с компьютера под Windows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "SparkTech" }]
+# Ядро приложения (ADB-слой, сканирование, веб-интерфейс) работает только на stdlib.
+dependencies = []
+
+[project.optional-dependencies]
+# Нативное окно на Windows (WebView2). Без него приложение открывает локальный интерфейс в браузере.
+desktop = ["pywebview>=4.4"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+sparktech = "sparktech.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["sparktech*"]
+
+[tool.setuptools.package-data]
+"sparktech.web" = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
