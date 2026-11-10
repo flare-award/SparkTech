@@ -23,10 +23,11 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from .. import APP_NAME, __version__
 from ..core.adb import ADB_DOWNLOAD_URL, AdbClient, AdbNotFound, connection_status_of
+from ..core.apps import AppService
 from ..core.classify import Settings
 from ..core.deleter import Deleter
 from ..core.jobs import Job, JobManager
@@ -34,6 +35,15 @@ from ..core.models import human_bytes
 from ..core.optimizer import USER_ACTIONS, Optimizer
 from ..core.process import CommandError, CommandTimeout
 from ..core.scanner import ScanOptions, Scanner
+from ..core.streaming import (
+    INITIAL_WINDOW,
+    TAIL_WINDOW,
+    PhoneFileStream,
+    StreamError,
+    guess_mime,
+    is_previewable,
+    parse_range,
+)
 from ..core.store import Store
 
 def _static_dir() -> Path:
@@ -68,8 +78,14 @@ class AppContext:
         self.scanner = Scanner(self.adb)
         self.deleter = Deleter(self.adb)
         self.optimizer = Optimizer(self.adb, self.store)
+        self.apps = AppService(self.adb)
         self.jobs = JobManager()
         self.scan_items: dict[str, dict] = {}  # scan_id -> {path: item}
+        self.app_cache: dict[str, list] = {}   # serial -> список приложений
+        self.download_dir = Path.home() / "Downloads" / "SparkTech"
+        # Одновременная отдача файлов: не даём браузеру открыть десять
+        # параллельных adb-процессов и «задушить» телефон.
+        self.stream_slots = threading.Semaphore(3)
         self.lock = threading.Lock()
         self.token = secrets.token_urlsafe(32)
         self.shutdown_event = threading.Event()
@@ -245,6 +261,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/log":
             self.send_json(200, {"ok": True, "entries": app.store.read_log(150)})
             return
+        if path.startswith("/api/preview/"):
+            self._serve_preview(path)
+            return
+        if path.startswith("/api/file/"):
+            self._serve_file(path)
+            return
+        if path == "/api/apps":
+            self._serve_apps()
+            return
+        if path.startswith("/api/app-icon/"):
+            self._serve_app_icon(path)
+            return
         if path == "/api/settings":
             self.send_json(200, {
                 "ok": True,
@@ -256,6 +284,181 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         raise ApiError("Неизвестный метод API", 404)
+
+    # --------------------------------------------------- файлы и превью
+
+    def _scan_paths(self, scan_id: str) -> tuple[str, dict]:
+        """Достать сохранённый результат сканирования и набор известных путей.
+
+        Это единственный источник истины для путей: подставить в URL
+        произвольный файл устройства нельзя.
+        """
+        app = self.app
+        with app.lock:
+            stored = app.scan_items.get(scan_id)
+        if stored is None:
+            raise ApiError("Результат сканирования не найден. Запустите сканирование заново.", 404)
+        return stored["serial"], stored["items"]
+
+    def _path_from_query(self, scan_id: str) -> tuple[str, dict, str]:
+        query = urlparse(self.path).query
+        raw = ""
+        for part in query.split("&"):
+            if part.startswith("path="):
+                raw = unquote(part.split("=", 1)[1])
+                break
+        if not raw:
+            raise ApiError("Не указан путь файла")
+        serial, items = self._scan_paths(scan_id)
+        item = items.get(raw)
+        if item is None:
+            raise ApiError(
+                "Этот файл отсутствует в текущем результате сканирования. "
+                "Повторите сканирование — показываются только проверенные файлы.",
+                403,
+            )
+        return serial, item, raw
+
+    def _serve_preview(self, path: str) -> None:
+        """Миниатюра фото или кадр видео — обычным ответом с Range-поддержкой."""
+        scan_id = path.rsplit("/", 1)[-1]
+        serial, item, remote_path = self._path_from_query(scan_id)
+        size = int(item.get("size") or 0)
+        mime = guess_mime(remote_path)
+        if not is_previewable(remote_path):
+            self.send_error_json(
+                415,
+                "Предпросмотр для этого типа файла не поддерживается: браузер не умеет его показывать.",
+                "unsupported",
+            )
+            return
+        self._stream_phone_file(serial, remote_path, size, mime)
+
+    def _serve_file(self, path: str) -> None:
+        """Полный файл для просмотра в новой вкладке или прослушивания."""
+        scan_id = path.rsplit("/", 1)[-1]
+        serial, item, remote_path = self._path_from_query(scan_id)
+        size = int(item.get("size") or 0)
+        self._stream_phone_file(serial, remote_path, size, guess_mime(remote_path))
+
+    def _stream_phone_file(self, serial: str, remote_path: str, size: int, mime: str) -> None:
+        """Отдать файл с устройства по частям, честно поддерживая Range.
+
+        Память не растёт: байты идут из процесса adb прямо в сокет. Для
+        видео дополнительно дочитывается хвост файла — у MP4, записанных
+        телефоном, оглавление (moov) часто лежит в конце, и без него браузер
+        не покажет первый кадр.
+        """
+        if not self.app.stream_slots.acquire(timeout=30):
+            self.send_error_json(
+                429,
+                "Слишком много одновременных запросов к файлам. Закройте лишние вкладки и повторите.",
+                "busy",
+            )
+            return
+        stream = None
+        try:
+            header = self.headers.get("Range")
+            requested = parse_range(header, size) if size > 0 else None
+            if requested is not None:
+                start, end = requested
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            else:
+                start, end = 0, (size - 1 if size > 0 else 0)
+                self.send_response(200)
+            length = max(0, end - start + 1)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            if self.command == "HEAD" or length <= 0:
+                return
+
+            stream = PhoneFileStream(self.app.adb, serial, remote_path)
+            window = length if length <= INITIAL_WINDOW else INITIAL_WINDOW
+            if start:
+                stream.seek_forward(start)
+            _copy_bytes(stream, window, self.wfile)
+            remaining = length - window
+            # Хвост файла для видео: браузеру нужен moov в конце MP4.
+            if remaining > 0 and TAIL_WINDOW > 0 and mime.startswith("video/"):
+                tail_len = min(TAIL_WINDOW, remaining)
+                tail_start = end - tail_len + 1
+                _copy_slice(stream, tail_start, tail_len, self.wfile, already_read=start + window)
+                remaining -= tail_len
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except (CommandError, CommandTimeout, StreamError) as exc:
+            # Заголовки уже отправлены — сообщение в теле уже не исправить,
+            # поэтому пишем в журнал, а не притворяемся, что всё хорошо.
+            self.app.log("preview_error", path=remote_path, error=str(exc)[:200])
+        finally:
+            if stream is not None:
+                stream.close()
+            self.app.stream_slots.release()
+
+    # ------------------------------------------------------------- приложения
+
+    def _serve_apps(self) -> None:
+        app = self.app
+        query = urlparse(self.path).query
+        serial = None
+        for part in query.split("&"):
+            if part.startswith("serial="):
+                serial = unquote(part.split("=", 1)[1])
+        if not serial:
+            raise ApiError("Устройство не выбрано", 409)
+        refresh = "refresh=1" in query
+        cached = app.app_cache.get(serial)
+        if cached is None or refresh:
+            cached = app.apps.list_apps(serial)
+            app.app_cache[serial] = cached
+            app.log("apps", ser=serial, count=len(cached))
+        apps = [a.to_dict() for a in cached]
+        total = sum(a["total_size"] for a in apps)
+        removable = sum(a["total_size"] for a in apps if not a["is_system"])
+        self.send_json(200, {
+            "ok": True,
+            "apps": apps,
+            "count": len(apps),
+            "total_size": total,
+            "removable_size": removable,
+            "notes": [
+                "Удалять приложения SparkTech не будет: это действие вы делаете на телефоне.",
+                "Данные и кэш приложений (/data/data) недоступны без root — их объём показан по данным Android, но очистить его из программы нельзя.",
+                "Время последнего запуска есть не на всех прошивках: Android 10+ часто его скрывает.",
+            ],
+        })
+
+    def _serve_app_icon(self, path: str) -> None:
+        app = self.app
+        query = urlparse(self.path).query
+        # Пакет передаётся в самом пути: /api/app-icon/<пакет>?serial=...
+        package = unquote(path.rsplit("/", 1)[-1])
+        serial = ""
+        for part in query.split("&"):
+            if part.startswith("serial="):
+                serial = unquote(part.split("=", 1)[1])
+        if not serial or not package:
+            raise ApiError("Нужны параметры serial и package", 400)
+        cached = app.app_cache.get(serial) or []
+        target = next((a for a in cached if a.package == package), None)
+        if target is None:
+            raise ApiError("Приложение не найдено в списке. Обновите список приложений.", 404)
+        icon = app.apps.icon(serial, target)
+        if not icon:
+            raise ApiError(
+                "APK приложения недоступен для чтения или в нём нет иконки — "
+                "показывается нейтральная заглушка.",
+                404,
+            )
+        mime = "image/png"
+        if icon[:4] == b"RIFF" and icon[8:12] == b"WEBP":
+            mime = "image/webp"
+        self._send(200, icon, mime, {"Cache-Control": "no-store"})
 
     def _query_serial(self) -> tuple[str | None, int | None]:
         qs = urlparse(self.path).query
@@ -348,6 +551,12 @@ class Handler(BaseHTTPRequestHandler):
                 "adb_resolved": resolved,
                 "adb_problem": problem,
             })
+            return
+        if path == "/api/download":
+            self._start_download(payload)
+            return
+        if path == "/api/reveal":
+            self._reveal_download_dir()
             return
         if path == "/api/scan":
             self._start_scan(payload)
@@ -452,6 +661,91 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     # --------------------------------------------------------------- задания
+
+    def _start_download(self, payload: dict) -> None:
+        """Сохранить файлы с телефона в папку «Загрузки/SparkTech» на ПК.
+
+        Имя файла не берётся из сети: оно вычисляется из пути на телефоне и
+        дополнительно проверяется на «..» и разделители, чтобы запись не
+        вышла за пределы папки загрузок. После копирования размер сверяется
+        с ожидаемым — совпадение и есть проверка успеха.
+        """
+        app = self.app
+        serial, _model, _sdk = self._device_from(payload)
+        paths = payload.get("paths")
+        scan_id = str(payload.get("scan_id") or "")
+        if not isinstance(paths, list) or not paths:
+            raise ApiError("Не выбрано ни одного файла")
+        if len(paths) > 200:
+            raise ApiError("За один раз можно сохранить не более 200 файлов")
+        with app.lock:
+            stored = app.scan_items.get(scan_id)
+        if stored is None:
+            raise ApiError("Результат сканирования не найден. Запустите сканирование заново.", 404)
+        items = stored["items"]
+        selected = []
+        for raw in paths:
+            item = items.get(str(raw))
+            if item is None:
+                continue
+            selected.append(item)
+        if not selected:
+            raise ApiError("Выбранные файлы отсутствуют в текущем результате сканирования", 400)
+
+        def target(job: Job):
+            saved: list[dict] = []
+            failed: list[dict] = []
+            folder = app.download_dir
+            folder.mkdir(parents=True, exist_ok=True)
+            total = len(selected)
+            for index, item in enumerate(selected, start=1):
+                if job.cancel_event.is_set():
+                    failed.append({"path": item["path"], "message": "Отменено пользователем"})
+                    continue
+                job.push("download", {
+                    "index": index,
+                    "total": total,
+                    "message": f"Сохранение {index} из {total}",
+                    "name": item.get("name"),
+                    "human": human_bytes(item.get("size")),
+                })
+                try:
+                    local = _safe_local_target(folder, item)
+                    app.adb.pull(serial, item["path"], local, cancel_event=job.cancel_event)
+                    size = local.stat().st_size
+                    expected = int(item.get("size") or 0)
+                    if expected and size != expected:
+                        failed.append({
+                            "path": item["path"],
+                            "local_path": str(local),
+                            "message": (
+                                f"Размер на компьютере ({human_bytes(size)}) не совпал с размером "
+                                f"на телефоне ({human_bytes(expected)}) — копия неполная."
+                            ),
+                        })
+                        continue
+                    saved.append({
+                        "path": item["path"],
+                        "local_path": str(local),
+                        "size": size,
+                    })
+                except (CommandError, CommandTimeout) as exc:
+                    failed.append({"path": item["path"], "message": str(exc)})
+            app.log("download", ser=serial, requested=total, ok=len(saved), failed=len(failed))
+            return {"saved": saved, "failed": failed, "folder": str(folder)}
+
+        job = app.jobs.create("download", target, meta={"serial": serial, "count": len(selected)})
+        self.send_json(200, {
+            "ok": True,
+            "job_id": job.id,
+            "folder": str(app.download_dir),
+        })
+
+    def _reveal_download_dir(self) -> None:
+        """Сообщить путь папки загрузок (открытие — средствами системы)."""
+        app = self.app
+        app.download_dir.mkdir(parents=True, exist_ok=True)
+        self.send_json(200, {"ok": True, "folder": str(app.download_dir)})
 
     def _start_scan(self, payload: dict) -> None:
         app = self.app
@@ -605,6 +899,71 @@ class Handler(BaseHTTPRequestHandler):
                 sdk = None
             model = props.get("ro.product.model") or model
         return serial, model, sdk
+
+
+def _safe_local_target(folder: Path, item: dict) -> Path:
+    """Собрать локальный путь так, чтобы он не вышел за папку загрузок.
+
+    Имя файла на телефоне может быть любым (в том числе ``..`` или со
+    слэшами), поэтому берётся только последний компонент, недопустимые для
+    Windows символы заменяются, а совпадения имён разводятся суффиксом.
+    """
+    raw_name = str(item.get("name") or "file")
+    name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = name.replace("\x00", "")
+    for bad in '<>:"|?*':
+        name = name.replace(bad, "_")
+    name = name.strip(". ")
+    if not name or name in (".", ".."):
+        name = "file"
+    if len(name) > 150:
+        stem, dot, ext = name.rpartition(".")
+        name = (stem[:140] + dot + ext[:9]) if dot else name[:150]
+    folder.mkdir(parents=True, exist_ok=True)
+    candidate = folder / name
+    stem, dot, ext = name.rpartition(".")
+    counter = 1
+    while candidate.exists():
+        if dot:
+            candidate = folder / f"{stem} ({counter}).{ext}"
+        else:
+            candidate = folder / f"{name} ({counter})"
+        counter += 1
+        if counter > 999:
+            break
+    try:
+        candidate.resolve().relative_to(folder.resolve())
+    except ValueError:
+        candidate = folder / "file"
+    return candidate
+
+
+def _copy_bytes(stream, length: int, out) -> int:
+    """Скопировать из потока телефона ровно до ``length`` байт."""
+    from ..core.streaming import _CHUNK
+
+    written = 0
+    while written < length:
+        chunk = stream.read(min(_CHUNK, length - written))
+        if not chunk:
+            break
+        out.write(chunk)
+        written += len(chunk)
+    return written
+
+
+def _copy_slice(stream, start: int, length: int, out, *, already_read: int = 0) -> int:
+    """Скопировать участок файла, начиная с ``start``.
+
+    ``PhoneFileStream`` умеет только двигаться вперёд, поэтому если позиция
+    потока уже больше нужной, участок пропускается: повторно читать файл с
+    начала дороже, чем один раз пропустить.
+    """
+    if start > already_read:
+        stream.seek_forward(start - already_read)
+    elif start < already_read:
+        return 0
+    return _copy_bytes(stream, length, out)
 
 
 def _summary(items: list[dict]) -> list[dict]:

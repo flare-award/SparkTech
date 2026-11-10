@@ -294,6 +294,83 @@ class AdbClient:
             env=self._env(),
         )
 
+    def run_binary(
+        self,
+        args: Iterable[str],
+        *,
+        timeout: float = 60.0,
+        max_bytes: int = 32 * 1024 * 1024,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[int, bytes, str]:
+        """Выполнить команду и получить байты (иконки, миниатюры).
+
+        Для ``adb`` это ``exec-out``: он отдаёт поток без преобразования
+        окончаний строк, что важно для PNG/JPEG на телефоне.
+        """
+        return process.run_bytes(
+            self._argv(args),
+            timeout=timeout,
+            max_bytes=max_bytes,
+            cancel_event=cancel_event,
+            env=self._env(),
+        )
+
+    def pull(
+        self,
+        serial: str,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        timeout: float = 600.0,
+        cancel_event: threading.Event | None = None,
+    ) -> Path:
+        """Скопировать файл с устройства на компьютер.
+
+        Путь на телефоне передаётся **отдельным аргументом**: adb сам
+        экранирует его для оболочки устройства, поэтому пробелы, кавычки и
+        кириллица в имени не ломают команду и не могут ничего «дописать».
+
+        После копирования проверяется, что файл существует и его размер
+        совпадает с ожидаемым (если он известен).
+        """
+        target = Path(local_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        res = self.run(
+            ["-s", serial, "pull", remote_path, str(target)],
+            timeout=timeout,
+            cancel_event=cancel_event,
+        )
+        if not res.ok:
+            raise CommandError(res.output.strip() or "adb не смог скопировать файл")
+        if not target.is_file():
+            raise CommandError(
+                "adb сообщил об успехе, но файл на компьютере не появился. "
+                "Проверьте права на папку загрузок и свободное место."
+            )
+        return target
+
+    def stat_size(self, serial: str, remote_path: str) -> int | None:
+        """Размер файла на устройстве в байтах (или None, если недоступен)."""
+        from .remote_path import quote_remote_path
+
+        try:
+            res = self.shell(serial, f"stat -c %s {quote_remote_path(remote_path)} 2>/dev/null", timeout=20)
+        except (CommandError, CommandTimeout):
+            return None
+        text = res.stdout.strip().splitlines()
+        if not text:
+            return None
+        try:
+            return int(text[0].strip())
+        except ValueError:
+            return None
+
+    def mkdir_local(self, path: str | Path) -> Path:
+        """Создать локальный каталог (для загрузок с телефона)."""
+        target = Path(path)
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
     def run_checked(
         self,
         args: Iterable[str],

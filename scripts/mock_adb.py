@@ -154,6 +154,27 @@ def main(argv: list[str]) -> int:
         command = " ".join(rest[1:])
         return handle_shell(command)
     if rest and rest[0] == "pull":
+        # Скопировать файл из макета «телефона» на компьютер, как настоящий adb.
+        if len(rest) < 3:
+            print("adb: pull требует источник и назначение", file=sys.stderr)
+            return 1
+        source = map_path(rest[1])
+        target = rest[2]
+        if not os.path.isfile(source):
+            print(f"adb: error: failed to stat remote object '{rest[1]}'", file=sys.stderr)
+            return 1
+        import shutil
+        os.makedirs(os.path.dirname(os.path.abspath(target)) or ".", exist_ok=True)
+        shutil.copyfile(source, target)
+        print(f"{rest[1]}: 1 file pulled.")
+        return 0
+    if rest and rest[0] == "exec-out":
+        command = " ".join(rest[1:])
+        if command.startswith("cat ") or command.startswith("head "):
+            proc = subprocess.run(["sh", "-c", rewrite(command)], capture_output=True)
+            sys.stdout.buffer.write(proc.stdout)
+            sys.stderr.buffer.write(proc.stderr)
+            return proc.returncode
         return 0
     print(f"mock adb: неизвестная команда: {rest}", file=sys.stderr)
     return 1

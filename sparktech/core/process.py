@@ -156,6 +156,91 @@ def _kill(proc: subprocess.Popen) -> None:
         pass
 
 
+def run_bytes(
+    argv: Sequence[str],
+    *,
+    timeout: float = 60.0,
+    max_bytes: int = 32 * 1024 * 1024,
+    cancel_event: threading.Event | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, bytes, str]:
+    """Запустить команду и вернуть **двоичный** stdout.
+
+    Нужен там, где вывод — не текст: иконки приложений и миниатюры файлов
+    приходят от устройства (``exec-out cat``) как байты изображения. Декодировать
+    их как UTF-8 нельзя, поэтому здесь отдельная функция, а не ``run``.
+
+    Защита от бесконечного вывода: если процесс отдал больше ``max_bytes``,
+    он убивается и выбрасывается ``CommandError`` — лучше честная ошибка, чем
+    съеденная память.
+    """
+    argv = [str(a) for a in argv]
+    if not argv:
+        raise CommandError("Пустая команда")
+    if cancel_event is not None and cancel_event.is_set():
+        raise CommandCancelled("Операция отменена")
+
+    full_env = dict(os.environ)
+    full_env.setdefault("ADB_MDNS", "0")
+    if env:
+        full_env.update(env)
+
+    kwargs = dict(
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        env=full_env,
+    )
+    kwargs = _apply_no_window(kwargs)
+    try:
+        proc = subprocess.Popen(argv, **kwargs)
+    except FileNotFoundError as exc:
+        raise CommandError(f"Исполняемый файл не найден: {argv[0]}") from exc
+    except OSError as exc:
+        raise CommandError(f"Не удалось запустить {argv[0]}: {exc}") from exc
+
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        if proc.stdout is not None:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    _kill(proc)
+                    raise CommandCancelled("Операция отменена")
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    _kill(proc)
+                    raise CommandError(
+                        f"Команда вернула больше {human_mb(max_bytes)} — прервано, "
+                        "чтобы не занять память"
+                    )
+                chunks.append(chunk)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill(proc)
+            raise CommandTimeout(f"Команда не ответила за {int(timeout)} с: {' '.join(argv[:3])}")
+    finally:
+        if proc.poll() is None:
+            _kill(proc)
+
+    err = b""
+    try:
+        if proc.stderr is not None:
+            err = proc.stderr.read() or b""
+    except OSError:
+        err = b""
+    stderr_text = err.decode("utf-8", "replace")
+    return proc.returncode, b"".join(chunks), stderr_text
+
+
+def human_mb(value: int) -> str:
+    return f"{value / (1024 * 1024):.0f} МБ"
+
+
 def run_streaming(
     argv: Sequence[str],
     *,

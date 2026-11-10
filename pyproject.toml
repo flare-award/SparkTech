@@ -33,3 +33,6 @@ include = ["sparktech*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# tests/ подключается как каталог модулей: тесты пользуются общими
+# конструкторами фикстур (apk_builder.py, conftest.py) без установки пакета.
+pythonpath = ["tests"]
