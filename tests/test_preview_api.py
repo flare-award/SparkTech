@@ -226,11 +226,83 @@ def test_download_rejects_paths_outside_scan(server):
     assert exc.value.code == 400
 
 
-def test_reveal_creates_download_folder(server):
+def test_reveal_creates_download_folder_and_reports_honestly(server):
+    """Папка создаётся всегда; «открылось ли» сообщается как есть.
+
+    В тестовой среде нет xdg-open/проводника, поэтому ok=False с понятной
+    причиной — это правильный честный ответ, а не сломанная функция.
+    """
     app, adb, base = server
     payload = post(app, base, "/api/reveal", {})
-    assert payload["ok"]
     assert Path(payload["folder"]).is_dir()
+    assert payload["ok"] is False
+    assert payload["error"]
+
+
+def test_reveal_refuses_path_outside_download_folder(server):
+    app, adb, base = server
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        post(app, base, "/api/reveal", {"local_path": "/etc/passwd"})
+    assert exc.value.code == 403
+
+
+def test_open_local_refuses_foreign_path(server):
+    """Открыть произвольный файл компьютера через API нельзя."""
+    app, adb, base = server
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        post(app, base, "/api/open-local", {"local_path": "/etc/hosts"})
+    assert exc.value.code == 403
+
+
+def test_open_local_reports_missing_file(server):
+    app, adb, base = server
+    missing = app.download_dir / "нет-такого.mp4"
+    app.download_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        post(app, base, "/api/open-local", {"local_path": str(missing)})
+    assert exc.value.code == 404
+
+
+def test_open_remote_copies_and_calls_system_opener(server, monkeypatch):
+    """Кнопка «открыть на компьютере»: копирует файл и отдаёт его системе."""
+    app, adb, base = server
+    calls = []
+    monkeypatch.setattr("sparktech.web.server.open_with_default",
+                        lambda path: (calls.append(Path(path)), _Ok())[1])
+    payload = post(app, base, "/api/open-remote", {
+        "serial": "SERIAL1",
+        "scan_id": "scan1",
+        "path": "/storage/emulated/0/Movies/clip.mp4",
+    })
+    assert payload["ok"] and payload["opened"]
+    local = Path(payload["local_path"])
+    assert local.is_file()
+    assert local.parent == app.download_dir
+    assert calls and calls[0] == local
+    # Размер копии сверяется: содержимое совпадает с «телефоном».
+    assert local.read_bytes() == adb.files["/storage/emulated/0/Movies/clip.mp4"]
+
+
+class _Ok:
+    ok = True
+    message = ""
+
+
+def test_open_remote_rejects_file_outside_scan(server):
+    app, adb, base = server
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        post(app, base, "/api/open-remote", {
+            "serial": "SERIAL1", "scan_id": "scan1", "path": "/data/data/secret",
+        })
+    assert exc.value.code == 403
+
+
+def test_open_data_dir_endpoint(server, monkeypatch):
+    app, adb, base = server
+    monkeypatch.setattr("sparktech.web.server.open_folder", lambda path: _Ok())
+    payload = post(app, base, "/api/open-data-dir", {})
+    assert payload["ok"]
+    assert payload["folder"] == str(app.store.dir)
 
 
 def test_apps_endpoint_requires_serial(server):

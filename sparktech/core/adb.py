@@ -18,6 +18,7 @@ from typing import Iterable
 
 from . import process
 from .process import CommandResult, CommandError, CommandTimeout, CommandCancelled
+from .remote_path import quote_remote_path as _quote
 
 # Состояния, которые adb сообщает в `adb devices`
 DEVICE_STATE_LABELS = {
@@ -364,6 +365,31 @@ class AdbClient:
             return int(text[0].strip())
         except ValueError:
             return None
+
+    def pull_bytes(
+        self,
+        serial: str,
+        remote_path: str,
+        *,
+        timeout: float = 600.0,
+        max_bytes: int = 256 * 1024 * 1024,
+        cancel_event: threading.Event | None = None,
+    ) -> bytes:
+        """Скачать файл в память (для небольших файлов: фото, документы).
+
+        Используется, когда нужен временный файл локально: например, чтобы
+        отдать его системному просмотрщику. Большие файлы лучше копировать
+        через :meth:`pull` сразу в папку загрузок.
+        """
+        rc, data, err = self.run_binary(
+            ["-s", serial, "exec-out", f"cat {_quote(remote_path)}"],
+            timeout=timeout,
+            max_bytes=max_bytes,
+            cancel_event=cancel_event,
+        )
+        if rc != 0 and not data:
+            raise CommandError(err.strip() or "adb не смог прочитать файл")
+        return data
 
     def mkdir_local(self, path: str | Path) -> Path:
         """Создать локальный каталог (для загрузок с телефона)."""

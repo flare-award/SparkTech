@@ -23,6 +23,7 @@ const state = {
   actions: [],
   selectedActions: new Set(),
   actionsMeta: {},
+  saved: new Map(),     // путь на телефоне -> локальный путь (уже скопировано)
   preview: null,        // открытый в просмотре файл
   apps: [],
   appsLoadedFor: null,
@@ -715,9 +716,14 @@ function renderTable() {
       h("div", { class: "num" }, fmtBytes(item.size)),
       h("div", { class: `risk ${item.risk}` }, h("span", { class: "risk-dot" }), h("span", {}, item.risk_label.replace(" осторожность", ""))),
       h("div", { class: "row-actions-cell" },
+        h("button", {
+          class: "tiny-btn play-btn",
+          title: "Открыть на компьютере в своей программе (плеере) — файл будет скопирован",
+          onclick: () => openOnPc(item),
+        }, state.saved.has(item.path) ? iconEl("circle-play") : iconEl("external-link")),
         previewable(item)
           ? h("button", {
-              class: "tiny-btn", title: "Открыть и проверить файл перед удалением",
+              class: "tiny-btn", title: "Быстрый предпросмотр внутри программы",
               onclick: () => openPreview(item),
             }, iconEl("eye"))
           : null,
@@ -820,6 +826,11 @@ async function openPreview(item) {
     `${fmtBytes(item.size)} · изменён ${fmtDate(item.mtime)}${item.mtime ? " (" + ago(item.mtime * 1000) + ")" : ""}`;
   $("#preview-hint").textContent = "Файл читается с телефона по кабелю — в интернет ничего не уходит.";
   $("#preview-download").onclick = () => downloadItems([item.path]);
+  $("#preview-open-pc").onclick = () => openOnPc(item);
+  $("#preview-folder").onclick = () => {
+    const local = state.saved.get(item.path);
+    openDownloadFolder(local);
+  };
   $("#preview-delete").onclick = () => { $("#modal-preview").classList.add("hidden"); askDelete([item.path]); };
   $("#modal-preview").classList.remove("hidden");
   body.innerHTML = "";
@@ -1093,12 +1104,27 @@ function renderDownloadReport(job, folder) {
   if (job.status === "error") body.appendChild(h("div", { class: "warning-box" }, job.error || "Ошибка сохранения"));
   if (saved.length) {
     body.appendChild(h("div", { class: "muted xsmall" }, `Сохранено файлов: ${saved.length}`));
-    saved.slice(0, 200).forEach((r) => body.appendChild(h("div", { class: "report-row" },
-      h("div", { style: "min-width:0" },
-        h("div", {}, r.path.rsplit("/", 1)[-1]),
-        h("div", { class: "msg", title: r.local_path }, r.local_path)),
-      h("span", { class: "badge success" }, fmtBytes(r.size)))));
+    saved.slice(0, 200).forEach((r) => {
+      state.saved.set(r.path, r.local_path);
+      body.appendChild(h("div", { class: "report-row" },
+        h("div", { style: "min-width:0" },
+          h("div", {}, r.path.rsplit("/", 1)[-1]),
+          h("div", { class: "msg", title: r.local_path }, r.local_path)),
+        h("div", { class: "row-actions" },
+          h("button", {
+            class: "btn ghost small",
+            onclick: () => openOnPc({ path: r.path, name: r.path.rsplit("/", 1)[-1] }),
+          }, iconEl("circle-play"), "Открыть"),
+          h("button", {
+            class: "btn ghost small",
+            onclick: () => openDownloadFolder(r.local_path),
+          }, iconEl("folder-open"), "Папка")),
+        h("span", { class: "badge success" }, fmtBytes(r.size))));
+    });
     if (saved.length > 200) body.appendChild(h("div", { class: "muted xsmall" }, `…и ещё ${saved.length - 200}`));
+    body.appendChild(h("div", { class: "row-actions" },
+      h("button", { class: "btn primary small", onclick: () => openDownloadFolder() },
+        iconEl("folder-open"), "Открыть папку с файлами")));
   }
   if (failed.length) {
     body.appendChild(h("div", { class: "muted xsmall" }, "Не сохранено:"));
@@ -1115,6 +1141,61 @@ function renderDownloadReport(job, folder) {
       h("span", { class: "tag" }, `сохранено ${saved.length} · ошибок ${failed.length}`)),
     body));
 }
+
+/* Открыть файл на компьютере в программе по умолчанию (свой плеер).
+
+   Это то, что нужно для видео: SparkTech копирует файл с телефона в папку
+   «Загрузки/SparkTech» и передаёт его системе — открывается привычный плеер,
+   а не окно программы. */
+async function openOnPc(item) {
+  if (!state.serial) { toast("Устройство не подключено", "err"); return; }
+  const local = state.saved.get(item.path);
+  const slowHint = setTimeout(() => toast("Копирование файла с телефона…", "info", 4000), 700);
+  toast(`Открываю «${item.name}» на компьютере…`, "info", 5000);
+  try {
+    if (local) {
+      const res = await api("/api/open-local", {
+        method: "POST", body: { local_path: local }, timeout: 30000,
+      });
+      toast(res.ok ? `Открыто: ${item.name}` : res.message, res.ok ? "ok" : "warn", 7000);
+      return;
+    }
+    const res = await api("/api/open-remote", {
+      method: "POST",
+      body: { serial: state.serial, scan_id: state.scanId, path: item.path },
+      timeout: 900000,
+    });
+    state.saved.set(item.path, res.local_path);
+    toast(
+      res.opened
+        ? `«${item.name}» открыт в программе по умолчанию`
+        : res.message,
+      res.opened ? "ok" : "warn",
+      9000,
+    );
+    renderTable();
+  } catch (err) {
+    toast(err.message, "err", 10000);
+  } finally {
+    clearTimeout(slowHint);
+  }
+}
+
+/* Открыть папку с сохранёнными файлами в проводнике Windows. */
+async function openDownloadFolder(localPath) {
+  try {
+    const body = localPath ? { local_path: localPath } : {};
+    const res = await api("/api/reveal", { method: "POST", body, timeout: 30000 });
+    if (!res.ok) toast(res.message || "Не удалось открыть проводник", "warn", 8000);
+    return res;
+  } catch (err) {
+    toast(err.message, "err", 9000);
+    return null;
+  }
+}
+
+$("#open-folder-top").addEventListener("click", () => openDownloadFolder());
+$("#open-downloads").addEventListener("click", () => openDownloadFolder());
 
 $("#download-selected").addEventListener("click", () => {
   if (!state.selected.size) { toast("Сначала отметьте файлы", "warn"); return; }
@@ -1543,6 +1624,7 @@ async function loadSettings() {
     $("#adb-download-link").href = data.download_url;
     $("#settings-adb-badge").textContent = data.adb_found ? "найден" : "не найден";
     $("#data-dir").textContent = data.data_dir;
+    if ($("#download-dir")) $("#download-dir").textContent = data.download_dir || "";
     $("#log-path").textContent = `Файл журнала: ${data.data_dir}\\operations.log`;
     $("#adb-license-note").textContent =
       "Platform-Tools распространяются Google по Android SDK License Agreement. SparkTech не скачивает и не распространяет adb: используйте официальную сборку с developer.android.com.";
@@ -1577,8 +1659,13 @@ $("#save-adb-path").addEventListener("click", async () => {
   } catch (err) { toast(err.message, "err", 9000); }
 });
 
-$("#open-data-dir").addEventListener("click", () => {
-  toast("Каталог данных указан рядом. Откройте его в проводнике Windows.", "info", 6000);
+$("#open-data-dir").addEventListener("click", async () => {
+  // Путь берём из настроек, но сервер всё равно открывает только свой каталог
+  // данных: прислать произвольный путь нельзя.
+  try {
+    const res = await api("/api/open-data-dir", { method: "POST", body: {}, timeout: 20000 });
+    if (!res.ok) toast(res.message || "Не удалось открыть папку", "warn", 7000);
+  } catch (err) { toast(err.message, "err"); }
 });
 
 $("#shutdown-app").addEventListener("click", async () => {

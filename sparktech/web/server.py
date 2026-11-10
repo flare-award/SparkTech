@@ -29,6 +29,7 @@ from .. import APP_NAME, __version__
 from ..core.adb import ADB_DOWNLOAD_URL, AdbClient, AdbNotFound, connection_status_of
 from ..core.apps import AppService
 from ..core.classify import Settings
+from ..core.desktop import open_folder, open_with_default, reveal_in_folder
 from ..core.deleter import Deleter
 from ..core.jobs import Job, JobManager
 from ..core.models import human_bytes
@@ -291,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
                 "adb_found": _safe_adb_path(app),
                 "download_url": ADB_DOWNLOAD_URL,
                 "data_dir": str(app.store.dir),
+                "download_dir": str(app.download_dir),
             })
             return
         raise ApiError("Неизвестный метод API", 404)
@@ -566,7 +568,16 @@ class Handler(BaseHTTPRequestHandler):
             self._start_download(payload)
             return
         if path == "/api/reveal":
-            self._reveal_download_dir()
+            self._reveal_download_dir(payload)
+            return
+        if path == "/api/open-data-dir":
+            self._open_data_dir()
+            return
+        if path == "/api/open-local":
+            self._open_local_file(payload)
+            return
+        if path == "/api/open-remote":
+            self._open_remote_file(payload)
             return
         if path == "/api/scan":
             self._start_scan(payload)
@@ -751,11 +762,136 @@ class Handler(BaseHTTPRequestHandler):
             "folder": str(app.download_dir),
         })
 
-    def _reveal_download_dir(self) -> None:
-        """Сообщить путь папки загрузок (открытие — средствами системы)."""
+    def _reveal_download_dir(self, payload: dict | None = None) -> None:
+        """Открыть папку загрузок SparkTech в проводнике Windows.
+
+        Пользователь просил именно это: увидеть, куда легли файлы, и открыть
+        их своим плеером. Поэтому открывается настоящая папка системой, а не
+        просто показывается путь строкой.
+        """
         app = self.app
         app.download_dir.mkdir(parents=True, exist_ok=True)
-        self.send_json(200, {"ok": True, "folder": str(app.download_dir)})
+        payload = payload or {}
+        local_path = str(payload.get("local_path") or "")
+        if local_path:
+            target = self._local_file_or_error(local_path)
+            result = reveal_in_folder(target)
+            self.send_json(200, {
+                "ok": result.ok,
+                "folder": str(app.download_dir),
+                "opened": local_path,
+                "error": None if result.ok else result.message,
+                "message": result.message,
+            })
+            return
+        result = open_folder(app.download_dir)
+        self.send_json(200, {
+            "ok": result.ok,
+            "folder": str(app.download_dir),
+            "error": None if result.ok else result.message,
+            "message": result.message,
+        })
+
+    def _local_file_or_error(self, local_path: str) -> Path:
+        """Проверить, что путь ведёт к файлу внутри папки загрузок SparkTech.
+
+        Через API нельзя открыть произвольный файл компьютера: путь должен
+        лежать в папке, куда SparkTech сам копирует файлы. Иначе это была бы
+        дырка «открой любой файл от имени пользователя».
+        """
+        app = self.app
+        try:
+            candidate = Path(local_path).expanduser().resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ApiError(f"Некорректный путь: {exc}", 400) from exc
+        folder = app.download_dir.resolve()
+        try:
+            candidate.relative_to(folder)
+        except ValueError:
+            raise ApiError(
+                "Открывать можно только файлы, сохранённые SparkTech в папку «Загрузки/SparkTech».",
+                403,
+            )
+        if not candidate.is_file():
+            raise ApiError(
+                "Файла нет на компьютере: возможно, он был перемещён или удалён.",
+                404,
+            )
+        return candidate
+
+    def _open_data_dir(self) -> None:
+        """Открыть папку настроек и журнала (не произвольный путь)."""
+        result = open_folder(self.app.store.dir)
+        self.send_json(200, {
+            "ok": result.ok,
+            "folder": str(self.app.store.dir),
+            "message": result.message,
+        })
+
+    def _open_local_file(self, payload: dict) -> None:
+        """Открыть сохранённый файл программой по умолчанию (ваш плеер)."""
+        local_path = str(payload.get("local_path") or "")
+        if not local_path:
+            raise ApiError("Не указан файл для открытия")
+        target = self._local_file_or_error(local_path)
+        result = open_with_default(target)
+        folder_result = reveal_in_folder(target) if not result.ok else None
+        self.app.log("open_local", path=target.name, ok=result.ok)
+        self.send_json(200, {
+            "ok": result.ok,
+            "opened": str(target),
+            "message": result.message or "Файл передан программе по умолчанию",
+            "revealed": bool(folder_result and folder_result.ok),
+            "error": None if result.ok else result.message,
+        })
+
+    def _open_remote_file(self, payload: dict) -> None:
+        """Скопировать файл с телефона (если нужно) и открыть его на компьютере.
+
+        Это главный сценарий замечания: «хочу посмотреть видео в своём плеере».
+        Файл копируется сразу в папку загрузок SparkTech и передаётся системе
+        как обычный файл — браузер и кодеки WebView2 здесь ни при чём.
+        """
+        app = self.app
+        serial, _model, _sdk = self._device_from(payload)
+        scan_id = str(payload.get("scan_id") or "")
+        remote_path = str(payload.get("path") or "")
+        with app.lock:
+            stored = app.scan_items.get(scan_id)
+        if stored is None:
+            raise ApiError("Результат сканирования не найден. Запустите сканирование заново.", 404)
+        item = stored["items"].get(remote_path)
+        if item is None:
+            raise ApiError(
+                "Этот файл отсутствует в текущем результате сканирования, поэтому открыть его нельзя.",
+                403,
+            )
+
+        local = _safe_local_target(app.download_dir, item)
+        app.download_dir.mkdir(parents=True, exist_ok=True)
+        app.adb.pull(serial, remote_path, local)
+        expected = int(item.get("size") or 0)
+        if expected and local.stat().st_size != expected:
+            raise ApiError(
+                f"Скопировано {human_bytes(local.stat().st_size)} вместо "
+                f"{human_bytes(expected)} — копия неполная, открывать её нельзя.",
+                500,
+            )
+        result = open_with_default(local)
+        app.log("open_remote", ser=serial, name=local.name, ok=result.ok,
+                bytes=local.stat().st_size)
+        self.send_json(200, {
+            "ok": True,
+            "local_path": str(local),
+            "size": local.stat().st_size,
+            "opened": result.ok,
+            "message": (
+                "Файл скопирован и открыт программой по умолчанию на компьютере"
+                if result.ok
+                else f"Файл скопирован в {local}, но открыть автоматически не удалось: {result.message}"
+            ),
+            "error": None if result.ok else result.message,
+        })
 
     def _start_scan(self, payload: dict) -> None:
         app = self.app

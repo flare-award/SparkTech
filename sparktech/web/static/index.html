@@ -269,6 +269,9 @@
               <span data-icon="download"></span>Сохранить на ПК
             </button>
             <button class="btn danger ghost small hidden" id="delete-selected">Удалить выбранные</button>
+            <button class="btn ghost small" id="open-folder-top" title="Открыть папку «Загрузки\SparkTech» в проводнике">
+              <span data-icon="folder-open"></span>Папка с файлами
+            </button>
             <button class="btn ghost small" id="export-csv">Экспорт CSV</button>
           </div>
 
@@ -461,10 +464,13 @@
           <div class="card-head"><h3>Данные приложения</h3></div>
           <p class="muted small">Настройки, журнал и сохранённые исходные значения оптимизаций.</p>
           <div class="kv"><span>Каталог данных</span><code id="data-dir">—</code></div>
+          <div class="kv"><span>Папка сохранённых файлов</span><code id="download-dir">—</code></div>
           <div class="row-actions">
-            <button class="btn ghost" id="open-data-dir" title="Только показывает путь: открытие папки делается средствами системы">Показать путь</button>
+            <button class="btn ghost" id="open-downloads" title="Открыть папку с файлами, сохранёнными с телефона">Открыть папку файлов</button>
+            <button class="btn ghost" id="open-data-dir" title="Открыть папку с настройками и журналом">Открыть папку данных</button>
             <button class="btn danger ghost" id="shutdown-app">Завершить SparkTech</button>
           </div>
+          <p class="muted xsmall">Сохранённые файлы открываются в вашем плеере или просмотрщике по умолчанию — программа не навязывает своё окно.</p>
         </div>
 
         <div class="card">
@@ -542,7 +548,9 @@
     <div class="modal-foot">
       <span class="muted xsmall" id="preview-hint"></span>
       <div class="spacer"></div>
+      <button class="btn ghost" id="preview-folder"><span data-icon="folder-open"></span>Открыть папку</button>
       <button class="btn ghost" id="preview-download"><span data-icon="download"></span>Сохранить на ПК</button>
+      <button class="btn primary" id="preview-open-pc"><span data-icon="circle-play"></span>Открыть на компьютере</button>
       <button class="btn danger ghost" id="preview-delete"><span data-icon="trash-2"></span>Удалить файл</button>
     </div>
   </div>
