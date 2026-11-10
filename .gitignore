@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+*.spec.bak
+
+# Артефакты PyInstaller
+SparkTech.exe
+SparkTech/
+release/
+*.zip
+
+# Локальные настройки и журналы (могут содержать метаданные устройства)
+sparktech_settings.json
+*.log
+
+# Официальные Android SDK Platform-Tools кладутся локально вручную (см. README),
+# в репозиторий не коммитятся.
+vendor/platform-tools/
+!vendor/README.md

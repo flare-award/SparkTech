@@ -1,0 +1,129 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Тесты (Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Тесты
+        shell: bash
+        run: |
+          python -m pytest -q || {
+            # Публикуем хвост вывода в аннотациях проверки: причина падения
+            # видна прямо в интерфейсе GitHub, без скачивания логов.
+            python -m pytest -q --tb=line 2>&1 | tail -n 12 | sed -e 's/%/%25/g' -e 's/\r//g' |
+              while IFS= read -r line; do echo "::error title=pytest::${line}"; done
+            exit 1
+          }
+
+  windows-exe:
+    name: Сборка SparkTech.exe
+    runs-on: windows-latest
+    needs: test
+    env:
+      # Консоль Windows не в UTF-8: без этого вывод PyInstaller/нашего spec
+      # с кириллицей падает с UnicodeEncodeError.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt pyinstaller pywebview
+      # Официальный adb намеренно не скачивается в CI: лицензию Google нужно
+      # принимать осознанно. Сборка без adb — рабочее состояние, путь задаётся
+      # в настройках приложения.
+      - name: Сборка
+        shell: bash
+        run: |
+          # GitHub запускает шаг с `bash -e`: без set +e оболочка выйдет на
+          # неудачной команде и мы не покажем причину.
+          set +e
+          python -m PyInstaller SparkTech.spec --noconfirm --clean > build.log 2>&1
+          status=$?
+          set -e
+          if [ ! -f dist/SparkTech.exe ]; then
+            # Аннотации ограничены по длине и количеству, поэтому публикуем
+            # только суть: строки с ошибкой и последние строки лога.
+            errs=$(grep -E "(Error|Exception|error):" build.log | tail -n 4 | tr -d '\r' | tr '\n' '~' | sed 's/%/%25/g')
+            tailtxt=$(tail -n 4 build.log | tr -d '\r' | tr '\n' '~' | sed 's/%/%25/g')
+            echo "::error title=pyinstaller-status::exit=$status ${errs}"
+            echo "::error title=pyinstaller-tail::${tailtxt}"
+            exit 1
+          fi
+          tail -n 3 build.log
+
+      - name: Проверка, что exe создан
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/SparkTech.exe")) { throw "SparkTech.exe не создан" }
+          Get-Item dist/SparkTech.exe | Select-Object Name, Length
+
+      # Запускаем собранный .exe: проверяем, что все модули (включая
+      # транзитивные вроде email из http.server) попали в архив и приложение
+      # реально поднимает локальный сервер. Именно этот шаг ловит ошибки
+      # вроде ModuleNotFoundError, которые видны только при запуске.
+      - name: Smoke-тест собранного exe
+        shell: pwsh
+        run: |
+          # Прокси раннера не должен перехватывать запрос к localhost.
+          $env:NO_PROXY = "127.0.0.1,localhost"
+          $env:no_proxy = "127.0.0.1,localhost"
+          $stateDir = Join-Path $env:LOCALAPPDATA "SparkTech"
+          Remove-Item -Force (Join-Path $stateDir "startup.log"), (Join-Path $stateDir "crash.log") -ErrorAction SilentlyContinue
+
+          $exe = (Resolve-Path "dist/SparkTech.exe").Path
+          $proc = Start-Process -FilePath $exe -ArgumentList "--no-window", "--port", "8123" -PassThru -NoNewWindow
+          $ok = $false
+          try {
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($proc.HasExited) { break }
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8123/api/health" -UseBasicParsing -TimeoutSec 2
+                if ($resp.StatusCode -eq 200 -and $resp.Content -match "SparkTech") { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) {
+              # startup.log пишет само приложение, crash.log — при фатальной ошибке:
+              # у оконного .exe нет консоли, иначе причину не увидеть.
+              $startup = if (Test-Path (Join-Path $stateDir "startup.log")) { Get-Content (Join-Path $stateDir "startup.log") -Raw } else { "startup.log отсутствует" }
+              $crash = if (Test-Path (Join-Path $stateDir "crash.log")) { Get-Content (Join-Path $stateDir "crash.log") -Raw } else { "crash.log отсутствует" }
+              $tail = (("startup: " + $startup + " | crash: " + $crash) -replace "`r?`n", "~" -replace "%", "%25")
+              if ($tail.Length -gt 1200) { $tail = $tail.Substring(0, 1200) }
+              Write-Output "::error title=exe-smoke::exit=$($proc.ExitCode) $tail"
+              exit 1
+            }
+            Write-Output "exe запустился и ответил на /api/health"
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SparkTech-windows-exe
+          path: dist/SparkTech.exe
+          if-no-files-found: error

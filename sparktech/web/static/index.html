@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>SparkTech — анализ и очистка Android</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f172a'/%3E%3Cpath d='M18 5 9 18h6l-1 9 9-13h-6z' fill='%2338bdf8'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M13.5 2 5 14h5.5L9 22l8.5-12H12z" fill="currentColor"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">SparkTech</div>
+        <div class="brand-sub">Android · Windows</div>
+      </div>
+    </div>
+
+    <div class="status-card" id="status-card">
+      <div class="status-dot" id="status-dot"></div>
+      <div class="status-text">
+        <div class="status-title" id="status-title">Проверка подключения…</div>
+        <div class="status-sub" id="status-sub">Поиск устройства через ADB</div>
+      </div>
+      <button class="icon-btn" id="refresh-devices" title="Обновить состояние" aria-label="Обновить состояние">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div class="device-picker hidden" id="device-picker">
+      <label for="device-select">Устройство</label>
+      <select id="device-select"></select>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-view="connect">
+        <span class="nav-ico" data-icon="plug-zap"></span><span>Подключение</span>
+      </button>
+      <button class="nav-item" data-view="clean" disabled>
+        <span class="nav-ico" data-icon="trash-2"></span><span>Очистка файлов</span>
+      </button>
+      <button class="nav-item" data-view="apps" disabled>
+        <span class="nav-ico" data-icon="layout-grid"></span><span>Приложения</span>
+      </button>
+      <button class="nav-item" data-view="optimize" disabled>
+        <span class="nav-ico" data-icon="gauge"></span><span>Оптимизация</span>
+      </button>
+      <button class="nav-item" data-view="log">
+        <span class="nav-ico" data-icon="scroll-text"></span><span>Журнал</span>
+      </button>
+      <button class="nav-item" data-view="settings">
+        <span class="nav-ico" data-icon="settings"></span><span>Настройки</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="privacy-note">
+        <svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z" fill="currentColor" opacity=".8"/></svg>
+        <span>Все данные остаются на этом компьютере</span>
+      </div>
+      <div class="version" id="version-label">SparkTech</div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <!-- ЭКРАН: ПОДКЛЮЧЕНИЕ -->
+    <section class="view" id="view-connect">
+      <header class="view-head">
+        <h1>Подключение телефона</h1>
+        <p class="muted">SparkTech работает с телефоном только через официальный Android Debug Bridge. Кабель, отладка по USB и ваше подтверждение на экране телефона обязательны.</p>
+      </header>
+
+      <div class="hero-card" id="connect-hero">
+        <div class="hero-icon" id="hero-icon">📱</div>
+        <div class="hero-body">
+          <h2 id="hero-title">Проверяем ADB и подключение…</h2>
+          <p id="hero-text" class="muted">Это займёт пару секунд.</p>
+          <div class="hero-actions" id="hero-actions"></div>
+        </div>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <div class="card-head">
+            <h3>Как подключить телефон</h3>
+            <span class="tag">4 шага</span>
+          </div>
+          <ol class="steps">
+            <li>
+              <div class="step-num">1</div>
+              <div>
+                <div class="step-title">Включите параметры разработчика</div>
+                <div class="step-text">Настройки → О телефоне → 7 раз нажмите «Номер сборки». На некоторых телефонах путь другой: Настройки → Система → О телефоне.</div>
+              </div>
+            </li>
+            <li>
+              <div class="step-num">2</div>
+              <div>
+                <div class="step-title">Включите отладку по USB</div>
+                <div class="step-text">Настройки → Система → Для разработчиков → «Отладка по USB». На Xiaomi дополнительно нужна «Установка через USB» и отключение «Отладка по USB (уровень защиты)».</div>
+              </div>
+            </li>
+            <li>
+              <div class="step-num">3</div>
+              <div>
+                <div class="step-title">Подключите телефон кабелем</div>
+                <div class="step-text">Кабель должен поддерживать передачу данных, а не только зарядку. В уведомлении «Использование USB» выберите «Передача файлов».</div>
+              </div>
+            </li>
+            <li>
+              <div class="step-num">4</div>
+              <div>
+                <div class="step-title">Подтвердите запрос на экране телефона</div>
+                <div class="step-text">Появится диалог «Разрешить отладку по USB?» — нажмите «Разрешить». Если диалог не появился, отключите и снова подключите кабель.</div>
+              </div>
+            </li>
+          </ol>
+          <div class="callout warn">
+            <strong>Важно:</strong> обычного подключения по MTP недостаточно. Для доступа к файлам через ADB нужна именно отладка по USB. SparkTech не просит пароль от телефона, Google-аккаунта и не требует root.
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card" id="device-card">
+            <div class="card-head"><h3>Найденные устройства</h3><span class="tag" id="device-count">0</span></div>
+            <div id="device-list" class="device-list">
+              <div class="empty muted">Список пуст</div>
+            </div>
+          </div>
+
+          <div class="card" id="adb-card">
+            <div class="card-head"><h3>ADB</h3><span class="tag" id="adb-badge">—</span></div>
+            <div id="adb-info" class="small muted">Проверка…</div>
+          </div>
+
+          <div class="card begin-card">
+            <h3>Готовы начать?</h3>
+            <p class="muted small">После подключения выберите раздел. В «Очистке» SparkTech покажет только те файлы, которые реально видит в общей памяти, и объяснит, почему каждый попал в список.</p>
+            <div class="begin-grid">
+              <button class="begin-btn" data-goto="clean" disabled id="begin-clean">
+                <span class="begin-ico" data-icon="trash-2"></span>
+                <span><strong>Очистка файлов</strong><small>Анализ файлов, поиск дубликатов</small></span>
+              </button>
+              <button class="begin-btn" data-goto="optimize" disabled id="begin-optimize">
+                <span class="begin-ico" data-icon="gauge"></span>
+                <span><strong>Оптимизация</strong><small>Проверяемые действия с описанием</small></span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ЭКРАН: ОЧИСТКА -->
+    <section class="view hidden" id="view-clean">
+      <header class="view-head row">
+        <div>
+          <h1>Очистка</h1>
+          <p class="muted">Сканирование доступной общей памяти телефона. SparkTech ничего не удаляет без вашего подтверждения.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="clean-settings-btn">Настройки сканирования</button>
+          <button class="btn primary" id="scan-start">Начать сканирование</button>
+        </div>
+      </header>
+
+      <div class="card scan-panel" id="scan-panel">
+        <div class="scan-panel-head">
+          <div>
+            <h3 id="scan-state-title">Сканирование не запущено</h3>
+            <p class="muted small" id="scan-state-text">Будут проверены общие каталоги: Загрузки, DCIM, Pictures, Movies, Music, Documents, Telegram, WhatsApp и другие доступные.</p>
+          </div>
+          <div class="scan-actions">
+            <button class="btn danger ghost hidden" id="scan-cancel">Отменить</button>
+          </div>
+        </div>
+        <div class="progress-wrap hidden" id="scan-progress-wrap">
+          <div class="progress"><div class="progress-bar indeterminate" id="scan-progress-bar"></div></div>
+          <div class="progress-meta">
+            <span id="scan-progress-text">Подготовка…</span>
+            <span id="scan-progress-stats" class="muted"></span>
+          </div>
+        </div>
+
+        <div class="settings-inline hidden" id="scan-settings-inline">
+          <div class="field">
+            <label for="set-threshold">Порог «крупного файла»</label>
+            <select id="set-threshold">
+              <option value="52428800">50 МБ</option>
+              <option value="104857600" selected>100 МБ</option>
+              <option value="262144000">250 МБ</option>
+              <option value="524288000">500 МБ</option>
+              <option value="1073741824">1 ГБ</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="set-min-size">Минимальный размер в результатах</label>
+            <select id="set-min-size">
+              <option value="0">Любой</option>
+              <option value="1048576">1 МБ</option>
+              <option value="10485760">10 МБ</option>
+              <option value="104857600">100 МБ</option>
+            </select>
+          </div>
+          <label class="check"><input type="checkbox" id="set-apk" checked> Установочные APK</label>
+          <label class="check"><input type="checkbox" id="set-archives" checked> Архивы</label>
+          <label class="check"><input type="checkbox" id="set-temp" checked> Временные файлы</label>
+          <label class="check"><input type="checkbox" id="set-downloads" checked> Папки загрузок</label>
+          <label class="check"><input type="checkbox" id="set-dups" checked> Искать дубликаты по содержимому</label>
+          <label class="check"><input type="checkbox" id="set-fullhash"> Полное хеширование (медленнее, точнее)</label>
+          <label class="check" title="Файлы Android/obb видны, но удалить их SparkTech не даст"><input type="checkbox" id="set-obb"> Показывать файлы Android/obb</label>
+          <label class="check" title="Миниатюры читаются с телефона по кабелю; отключите, чтобы не нагружать устройство"><input type="checkbox" id="set-preview" checked> Показывать превью фото и видео</label>
+        </div>
+      </div>
+
+      <div class="hidden" id="results-block">
+        <div class="stats-row" id="stats-row"></div>
+
+        <div class="card free-card" id="free-card">
+          <div class="free-head">
+            <h3><span class="ico" data-icon="hard-drive"></span> Сколько места освободится</h3>
+            <span class="tag" id="free-tag">—</span>
+          </div>
+          <div class="free-body">
+            <div class="free-bar" aria-hidden="true">
+              <div class="free-used" id="free-used-bar"></div>
+              <div class="free-pending" id="free-pending-bar"></div>
+            </div>
+            <div class="free-legend">
+              <span><i class="dot used"></i> Занято: <strong id="free-used">—</strong></span>
+              <span><i class="dot pending"></i> Освободится: <strong id="free-pending">—</strong></span>
+              <span><i class="dot free"></i> Свободно сейчас: <strong id="free-now">—</strong></span>
+              <span class="free-after">Станет свободно: <strong id="free-after">—</strong></span>
+            </div>
+          </div>
+          <p class="muted xsmall" id="free-note"></p>
+        </div>
+
+        <div class="card table-card">
+          <div class="toolbar">
+            <div class="search">
+              <svg viewBox="0 0 24 24" width="15" height="15"><path d="M10 3a7 7 0 1 1-4.9 12L2 18.1 3.9 20l3.1-3.1A7 7 0 0 1 10 3zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10z" fill="currentColor"/></svg>
+              <input type="search" id="filter-query" placeholder="Поиск по пути или имени файла…">
+            </div>
+            <select id="filter-category" title="Категория">
+              <option value="">Все категории</option>
+            </select>
+            <select id="filter-risk" title="Осторожность">
+              <option value="">Любая осторожность</option>
+              <option value="high">Высокая</option>
+              <option value="medium">Средняя</option>
+              <option value="low">Низкая</option>
+            </select>
+            <select id="sort-by" title="Сортировка">
+              <option value="size">По размеру</option>
+              <option value="date">По дате изменения</option>
+              <option value="name">По имени</option>
+              <option value="risk">По осторожности</option>
+            </select>
+            <button class="btn ghost small" id="sort-dir" data-desc="1">↓</button>
+            <div class="spacer"></div>
+            <label class="check small"><input type="checkbox" id="select-all"> Выбрать всё видимое</label>
+            <button class="btn ghost small" id="download-selected" title="Скопировать выбранные файлы в папку «Загрузки» на компьютере">
+              <span data-icon="download"></span>Сохранить на ПК
+            </button>
+            <button class="btn danger ghost small hidden" id="delete-selected">Удалить выбранные</button>
+            <button class="btn ghost small" id="open-folder-top" title="Открыть папку «Загрузки\SparkTech» в проводнике">
+              <span data-icon="folder-open"></span>Папка с файлами
+            </button>
+            <button class="btn ghost small" id="export-csv">Экспорт CSV</button>
+          </div>
+
+          <div class="table-head">
+            <span></span>
+            <span>Файл</span>
+            <span>Дата</span>
+            <span>Категория</span>
+            <span class="num">Размер</span>
+            <span>Осторожность</span>
+            <span></span>
+          </div>
+          <div class="table-body" id="results-body"></div>
+          <div class="table-foot">
+            <span id="visible-count" class="muted small"></span>
+            <button class="btn ghost small" id="load-more">Показать ещё</button>
+          </div>
+        </div>
+
+        <div class="card coverage">
+          <div class="card-head"><h3>Что удалось проверить</h3><span class="tag" id="coverage-tag">—</span></div>
+          <div id="coverage-list" class="coverage-list"></div>
+          <div id="coverage-warnings" class="warnings"></div>
+        </div>
+      </div>
+
+      <div class="hidden" id="delete-report"></div>
+    </section>
+
+    <!-- ЭКРАН: ПРИЛОЖЕНИЯ -->
+    <section class="view hidden" id="view-apps">
+      <header class="view-head row">
+        <div>
+          <h1>Приложения</h1>
+          <p class="muted">
+            Что установлено на телефоне: реальные названия и иконки из APK, размер приложения,
+            данных и кэша, дата установки и обновления, последний запуск. Удалять приложения
+            SparkTech не будет — это действие выполняется на телефоне.
+          </p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="apps-refresh"><span data-icon="refresh-cw"></span>Обновить список</button>
+        </div>
+      </header>
+
+      <div class="card scan-panel">
+        <div class="scan-panel-head">
+          <div>
+            <h3 id="apps-state-title">Список ещё не загружен</h3>
+            <p class="muted small" id="apps-state-text">
+              SparkTech прочитает список пакетов через adb, затем названия и иконки из APK.
+              На телефоне с сотней приложений это занимает до минуты.
+            </p>
+          </div>
+          <div class="scan-actions">
+            <button class="btn primary" id="apps-load">Загрузить список</button>
+          </div>
+        </div>
+        <div class="progress-wrap hidden" id="apps-progress-wrap">
+          <div class="progress"><div class="progress-bar indeterminate" id="apps-progress-bar"></div></div>
+          <div class="progress-meta"><span id="apps-progress-text">Чтение списка приложений…</span></div>
+        </div>
+      </div>
+
+      <div class="hidden" id="apps-block">
+        <div class="stats-row" id="apps-stats"></div>
+
+        <div class="card table-card">
+          <div class="toolbar">
+            <div class="search">
+              <span data-icon="search"></span>
+              <input type="search" id="apps-filter-query" placeholder="Поиск по названию или пакету…">
+            </div>
+            <select id="apps-filter-category" title="Категория">
+              <option value="">Все категории</option>
+            </select>
+            <select id="apps-filter-kind" title="Тип">
+              <option value="">Все приложения</option>
+              <option value="user">Только установленные вами</option>
+              <option value="system">Только системные</option>
+            </select>
+            <select id="apps-sort" title="Сортировка">
+              <option value="size">По размеру</option>
+              <option value="installed">По дате установки</option>
+              <option value="updated">По дате обновления</option>
+              <option value="used">По последнему запуску</option>
+              <option value="name">По названию</option>
+            </select>
+            <button class="btn ghost small" id="apps-sort-dir" data-desc="1" aria-label="Изменить направление сортировки">
+              <span data-icon="arrow-down"></span>
+            </button>
+          </div>
+
+          <div class="table-head apps-table-head">
+            <span></span>
+            <span>Приложение</span>
+            <span>Установлено</span>
+            <span>Обновлено</span>
+            <span>Запуск</span>
+            <span class="num">Размер</span>
+          </div>
+          <div class="table-body" id="apps-body"></div>
+          <div class="table-foot">
+            <span id="apps-visible-count" class="muted small"></span>
+            <button class="btn ghost small" id="apps-load-more">Показать ещё</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>Что важно знать</h3><span class="tag">честно</span></div>
+          <div id="apps-notes" class="warnings"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ЭКРАН: ОПТИМИЗАЦИЯ -->
+    <section class="view hidden" id="view-optimize">
+      <header class="view-head row">
+        <div>
+          <h1>Оптимизация</h1>
+          <p class="muted">Список действий проверен на вашем устройстве. Отметьте нужные, прочитайте ограничения и запустите. SparkTech не обещает «ускорения на 100%».</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn primary" id="optimize-run" disabled>Оптимизировать</button>
+        </div>
+      </header>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Доступные действия</h3>
+          <span class="tag" id="actions-count">—</span>
+        </div>
+        <div id="actions-list" class="actions-list">
+          <div class="empty muted">Загрузка списка действий…</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Только вручную на телефоне</h3><span class="tag">без автоматизации</span></div>
+        <div id="manual-actions" class="manual-list"></div>
+      </div>
+
+      <div class="hidden" id="optimize-report"></div>
+    </section>
+
+    <!-- ЭКРАН: ЖУРНАЛ -->
+    <section class="view hidden" id="view-log">
+      <header class="view-head row">
+        <div>
+          <h1>Журнал операций</h1>
+          <p class="muted">Локальный журнал без паролей и содержимого файлов: только тип операции, устройство, счётчики и результат.</p>
+        </div>
+        <div class="head-actions"><button class="btn ghost" id="log-refresh">Обновить</button></div>
+      </header>
+      <div class="card">
+        <div id="log-list" class="log-list"><div class="empty muted">Записей пока нет</div></div>
+      </div>
+      <p class="muted small" id="log-path"></p>
+    </section>
+
+    <!-- ЭКРАН: НАСТРОЙКИ -->
+    <section class="view hidden" id="view-settings">
+      <header class="view-head">
+        <h1>Настройки</h1>
+        <p class="muted">Все параметры хранятся локально. Приложение не отправляет данные в интернет.</p>
+      </header>
+
+      <div class="grid two">
+        <div class="card">
+          <div class="card-head"><h3>Android SDK Platform-Tools (adb)</h3><span class="tag" id="settings-adb-badge">—</span></div>
+          <p class="muted small">SparkTech не скачивает adb сам. Укажите путь к официальному <code>adb.exe</code>. Если файл лежит рядом с программой в папке <code>platform-tools</code>, он будет найден автоматически.</p>
+          <div class="field">
+            <label for="adb-path-input">Путь к adb.exe</label>
+            <input type="text" id="adb-path-input" placeholder="C:\platform-tools\adb.exe">
+            <p class="muted xsmall">Можно указать как файл <code>adb.exe</code>, так и папку <code>platform-tools</code> (или весь Android SDK) — SparkTech найдёт исполняемый файл сам. Кавычки из «Свойств» проводника можно не удалять.</p>
+          </div>
+          <div class="row-actions">
+            <button class="btn primary" id="save-adb-path">Сохранить путь</button>
+            <a class="btn ghost" id="adb-download-link" target="_blank" rel="noreferrer noopener">Официальная страница Platform-Tools</a>
+          </div>
+          <p class="muted xsmall" id="adb-license-note"></p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>Параметры сканирования по умолчанию</h3></div>
+          <div id="default-settings" class="settings-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>Данные приложения</h3></div>
+          <p class="muted small">Настройки, журнал и сохранённые исходные значения оптимизаций.</p>
+          <div class="kv"><span>Каталог данных</span><code id="data-dir">—</code></div>
+          <div class="kv"><span>Папка сохранённых файлов</span><code id="download-dir">—</code></div>
+          <div class="row-actions">
+            <button class="btn ghost" id="open-downloads" title="Открыть папку с файлами, сохранёнными с телефона">Открыть папку файлов</button>
+            <button class="btn ghost" id="open-data-dir" title="Открыть папку с настройками и журналом">Открыть папку данных</button>
+            <button class="btn danger ghost" id="shutdown-app">Завершить SparkTech</button>
+          </div>
+          <p class="muted xsmall">Сохранённые файлы открываются в вашем плеере или просмотрщике по умолчанию — программа не навязывает своё окно.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>Честность и ограничения</h3></div>
+          <ul class="plain-list">
+            <li>SparkTech видит только общую пользовательскую память, доступную через ADB без root.</li>
+            <li>Закрытые данные приложений и кэш приложений не сканируются и не очищаются автоматически.</li>
+            <li>Ничего не удаляется без подтверждения; автоочистки и «ускорителей» в программе нет.</li>
+            <li>Данные телефона не отправляются в сеть. Аналитики нет.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Модальное окно подтверждения удаления -->
+<div class="modal-backdrop hidden" id="modal-delete" role="dialog" aria-modal="true" aria-labelledby="modal-delete-title">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="modal-delete-title">Удалить выбранные файлы?</h2>
+      <button class="icon-btn" data-close="modal-delete" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="danger-banner">
+        Удаление с устройства <strong>необратимо</strong>. SparkTech не умеет восстанавливать файлы и не отправляет их в «корзину».
+      </div>
+      <div class="kv-row">
+        <div class="kv-box"><span class="kv-label">Файлов</span><strong id="modal-count">0</strong></div>
+        <div class="kv-box"><span class="kv-label">Общий размер</span><strong id="modal-size">0</strong></div>
+      </div>
+      <div class="modal-list" id="modal-list"></div>
+      <label class="check"><input type="checkbox" id="modal-confirm-check"> Я проверил список и понимаю, что файлы будут удалены безвозвратно</label>
+      <p class="muted xsmall">Системные файлы и данные приложений к удалению не допускаются. Если файл изменился после сканирования, SparkTech пропустит его и сообщит об этом.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close="modal-delete">Оставить файлы</button>
+      <button class="btn danger" id="modal-delete-confirm" disabled>Удалить выбранное</button>
+    </div>
+  </div>
+</div>
+
+<!-- Модальное окно подтверждения оптимизации -->
+<div class="modal-backdrop hidden" id="modal-optimize" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Запустить выбранные действия?</h2>
+      <button class="icon-btn" data-close="modal-optimize" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted small">SparkTech выполнит только отмеченные действия и проверит результат на устройстве. Отмена доступна только для действий с настройками.</p>
+      <div id="optimize-summary" class="modal-list"></div>
+      <div id="optimize-extra-confirm"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close="modal-optimize">Отмена</button>
+      <button class="btn primary" id="modal-optimize-confirm">Выполнить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Модальное окно просмотра файла -->
+<div class="modal-backdrop hidden" id="modal-preview" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <div style="min-width:0">
+        <h2 id="preview-title">Просмотр файла</h2>
+        <div class="muted xsmall" id="preview-meta"></div>
+      </div>
+      <button class="icon-btn" data-close="modal-preview" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="modal-body preview-body" id="preview-body">
+      <div class="empty muted">Загрузка превью с телефона…</div>
+    </div>
+    <div class="modal-foot">
+      <span class="muted xsmall" id="preview-hint"></span>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="preview-folder"><span data-icon="folder-open"></span>Открыть папку</button>
+      <button class="btn ghost" id="preview-download"><span data-icon="download"></span>Сохранить на ПК</button>
+      <button class="btn primary" id="preview-open-pc"><span data-icon="circle-play"></span>Открыть на компьютере</button>
+      <button class="btn danger ghost" id="preview-delete"><span data-icon="trash-2"></span>Удалить файл</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>window.__SPARKTECH_TOKEN__ = "@@SPARKTECH_TOKEN@@";</script>
+<script src="/static/icons.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
